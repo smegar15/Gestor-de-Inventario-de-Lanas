@@ -1,0 +1,6 @@
+{
+  "name": "Gestor de Inventario de Lanas",
+  "description": "Una aplicación web completa y pulida para gestionar el catálogo, control de stock y registro de movimientos de un negocio de lanas con autenticación y respaldo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

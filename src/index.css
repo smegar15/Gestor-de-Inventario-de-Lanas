@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Custom styles for professional print reports */
+@media print {
+  aside {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    background-color: white !important;
+  }
+  #main-content {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  #table-movements-history {
+    font-size: 10px !important;
+  }
+  #btn-print-screen, #btn-export-moves, input, select, button {
+    display: none !important;
+  }
+}
+
