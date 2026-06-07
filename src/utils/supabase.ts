@@ -23,8 +23,9 @@ function readEnv(name: string): string | null {
 }
 
 export function getSupabase(url?: string, key?: string) {
-  const envUrl = readEnv('VITE_SUPABASE_URL');
-  const envKey = readEnv('VITE_SUPABASE_ANON_KEY');
+  // Cambio clave: Acceso directo y estático a import.meta.env
+  const envUrl = import.meta.env.VITE_SUPABASE_URL;
+  const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
   const finalUrl = url || envUrl || localStorage.getItem('tejestock_supabase_url');
   const finalKey = key || envKey || localStorage.getItem('tejestock_supabase_key');

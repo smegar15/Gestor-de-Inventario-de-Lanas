@@ -60,15 +60,15 @@ export default function App() {
         return windowValue ?? (import.meta as any)?.env?.[name];
       };
 
-      const envGemini = readRuntimeEnv('VITE_GEMINI_API_KEY');
+      const envGemini = import.meta.env.VITE_GEMINI_API_KEY;
       const storedKey = localStorage.getItem('tejestock_gemini_key');
       const initialGeminiKey = cleanValue(envGemini || storedKey || '');
       if (initialGeminiKey) setGeminiKey(initialGeminiKey);
 
       const storedSupaUrlRaw =
-        localStorage.getItem('tejestock_supabase_url') || readRuntimeEnv('VITE_SUPABASE_URL');
+        localStorage.getItem('tejestock_supabase_url') || import.meta.env.VITE_SUPABASE_URL;
       const storedSupaKeyRaw =
-        localStorage.getItem('tejestock_supabase_key') || readRuntimeEnv('VITE_SUPABASE_ANON_KEY');
+        localStorage.getItem('tejestock_supabase_key') || import.meta.env.VITE_SUPABASE_ANON_KEY;
 
       const storedSupaUrl = cleanValue(storedSupaUrlRaw);
       const storedSupaKey = cleanValue(storedSupaKeyRaw);
