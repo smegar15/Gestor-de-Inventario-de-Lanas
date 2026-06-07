@@ -42,11 +42,14 @@ export function getSupabase(url?: string, key?: string) {
   return null;
 }
 
-export async function syncYarnsToSupabase(yarns: any[], bags?: any[]) {
+export async function syncYarnsToSupabase(yarns: any[], bags?: any[], projects?: any[]) {
   const client = getSupabase();
   if (!client) return false;
 
-  const data = Array.isArray(bags) ? { yarns, bags } : yarns;
+  const data =
+    Array.isArray(bags) || Array.isArray(projects)
+      ? { yarns, bags: Array.isArray(bags) ? bags : [], projects: Array.isArray(projects) ? projects : [] }
+      : yarns;
   const { error } = await client
     .from('inventory')
     .upsert({ id: 1, data, updated_at: new Date().toISOString() });

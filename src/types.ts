@@ -25,6 +25,31 @@ export interface Bag {
   createdAt: string;
 }
 
+export interface ProjectPaletteColor {
+  hex: string;
+  name: string;
+  weight: number;
+}
+
+export interface ProjectSelection {
+  designHex: string;
+  yarnId: string;
+  colorCode: string;
+  quantity: number;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  image?: { name: string; data: string };
+  palette?: ProjectPaletteColor[];
+  selections: ProjectSelection[];
+  previews?: Record<string, string>;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Yarn {
   id: string;
   name: string;

@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart3, 
   Layers, 
+  Folder,
   Database, 
   Menu,
   X,
@@ -15,7 +16,7 @@ import {
   Settings
 } from 'lucide-react';
 
-import { Bag, Yarn, Movement } from './types';
+import { Bag, Project, Yarn, Movement } from './types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from './data/catalogSeeds';
 import { normalizeYarn, clearYarnStock } from './utils/inventory';
 import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase, testSupabaseConnection } from './utils/supabase';
@@ -24,6 +25,7 @@ import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase, testSupabaseCo
 import Dashboard from './components/Dashboard';
 import CatalogManagement from './components/CatalogManagement';
 import BagManagement from './components/BagManagement';
+import ProjectsManagement from './components/ProjectsManagement';
 import BackupManager from './components/BackupManager';
 
 export default function App() {
@@ -31,6 +33,7 @@ export default function App() {
   const [yarns, setYarns] = useState<Yarn[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
   const [bags, setBags] = useState<Bag[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [geminiKey, setGeminiKey] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('');
   const [supabaseKey, setSupabaseKey] = useState<string>('');
@@ -39,7 +42,7 @@ export default function App() {
   const [lastCloudLoad, setLastCloudLoad] = useState<{ count: number; at: string } | null>(null);
   
   // App navigation, UI states
-  const [activeTab, setActiveTab] = useState<'inventory' | 'catalog' | 'bags' | 'backup'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'catalog' | 'bags' | 'projects' | 'backup'>('inventory');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Initialize DB from localStorage or seeds
@@ -113,6 +116,10 @@ export default function App() {
       const localBags: Bag[] =
         storedBags && storedBags.trim() ? (JSON.parse(storedBags) as Bag[]) : [];
 
+      const storedProjects = localStorage.getItem('tejestock_projects_v1');
+      const localProjects: Project[] =
+        storedProjects && storedProjects.trim() ? (JSON.parse(storedProjects) as Project[]) : [];
+
       setMovements([]);
       localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
 
@@ -127,6 +134,8 @@ export default function App() {
             (remote && Array.isArray((remote as any).yarns) ? (remote as any).yarns : null);
           const remoteBags: Bag[] | null =
             remote && Array.isArray((remote as any).bags) ? (remote as any).bags : null;
+          const remoteProjects: Project[] | null =
+            remote && Array.isArray((remote as any).projects) ? (remote as any).projects : null;
 
           if (remoteYarns && remoteYarns.length > 0) {
             const normalizedRemote = remoteYarns.map(normalizeYarn);
@@ -135,6 +144,9 @@ export default function App() {
             const nextBags = mergeBagsWithYarns(remoteBags || localBags, normalizedRemote);
             setBags(nextBags);
             localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
+            const nextProjects = Array.isArray(remoteProjects) ? remoteProjects : localProjects;
+            setProjects(nextProjects);
+            localStorage.setItem('tejestock_projects_v1', JSON.stringify(nextProjects));
             setSyncStatus('synced');
             setLastCloudLoad({ count: normalizedRemote.length, at: new Date().toISOString() });
             return;
@@ -143,22 +155,26 @@ export default function App() {
           if (localYarns) {
             const normalizedLocal = localYarns.map(normalizeYarn);
             const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
-            const success = await syncYarnsToSupabase(normalizedLocal, nextBags);
+            const success = await syncYarnsToSupabase(normalizedLocal, nextBags, localProjects);
             setSyncStatus(success ? 'synced' : 'offline');
             setYarns(normalizedLocal);
             setBags(nextBags);
             localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
+            setProjects(localProjects);
+            localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
             return;
           }
 
           const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
           const nextBags = mergeBagsWithYarns(localBags, initialYarns);
-          const success = await syncYarnsToSupabase(initialYarns, nextBags);
+          const success = await syncYarnsToSupabase(initialYarns, nextBags, localProjects);
           setSyncStatus(success ? 'synced' : 'offline');
           setYarns(initialYarns);
           setBags(nextBags);
+          setProjects(localProjects);
           localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
           localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
+          localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
           if (success) setLastCloudLoad({ count: initialYarns.length, at: new Date().toISOString() });
           return;
         } else {
@@ -172,6 +188,8 @@ export default function App() {
         const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
         setBags(nextBags);
         localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
+        setProjects(localProjects);
+        localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
         return;
       }
 
@@ -181,6 +199,8 @@ export default function App() {
       const nextBags = mergeBagsWithYarns(localBags, initialYarns);
       setBags(nextBags);
       localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
+      setProjects(localProjects);
+      localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
     };
 
     init();
@@ -233,7 +253,7 @@ export default function App() {
     
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(normalized, nextBags);
+      const success = await syncYarnsToSupabase(normalized, nextBags, projects);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
@@ -244,7 +264,18 @@ export default function App() {
 
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(yarns, updatedBags);
+      const success = await syncYarnsToSupabase(yarns, updatedBags, projects);
+      setSyncStatus(success ? 'synced' : 'offline');
+    }
+  };
+
+  const saveProjects = async (updatedProjects: Project[]) => {
+    setProjects(updatedProjects);
+    localStorage.setItem('tejestock_projects_v1', JSON.stringify(updatedProjects));
+
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      const success = await syncYarnsToSupabase(yarns, bags, updatedProjects);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
@@ -292,7 +323,7 @@ export default function App() {
           `- URL o Anon Key incorrectas.`
         );
       } else {
-        const success = await syncYarnsToSupabase(yarns, bags);
+        const success = await syncYarnsToSupabase(yarns, bags, projects);
         setSyncStatus(success ? 'synced' : 'offline');
       }
     } else {
@@ -382,15 +413,18 @@ export default function App() {
     localStorage.removeItem('tejestock_yarns_v1');
     localStorage.removeItem('tejestock_moves_v1');
     localStorage.removeItem('tejestock_bags_v1');
+    localStorage.removeItem('tejestock_projects_v1');
 
     const resetYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
     setYarns(resetYarns);
     setMovements([]);
     setBags([]);
+    setProjects([]);
 
     localStorage.setItem('tejestock_yarns_v1', JSON.stringify(resetYarns));
     localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
     localStorage.setItem('tejestock_bags_v1', JSON.stringify([]));
+    localStorage.setItem('tejestock_projects_v1', JSON.stringify([]));
   };
 
   const handleRestoreBackup = (backup: any) => {
@@ -481,6 +515,19 @@ export default function App() {
             </button>
 
             <button
+              id="nav-tab-projects"
+              onClick={() => { setActiveTab('projects'); setIsMobileMenuOpen(false); }}
+              className={`w-full flex items-center gap-3 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer text-left ${
+                activeTab === 'projects' 
+                  ? 'bg-orange-600 text-white shadow-md' 
+                  : 'hover:bg-slate-850 hover:text-white'
+              }`}
+            >
+              <Folder size={16} />
+              <span>Mis Proyectos</span>
+            </button>
+
+            <button
               id="nav-tab-backup"
               onClick={() => { setActiveTab('backup'); setIsMobileMenuOpen(false); }}
               className={`w-full flex items-center gap-3 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer text-left ${
@@ -543,6 +590,15 @@ export default function App() {
                 bags={bags}
                 onUpdateYarns={saveYarns}
                 onUpdateBags={saveBags}
+              />
+            )}
+
+            {activeTab === 'projects' && (
+              <ProjectsManagement
+                yarns={yarns}
+                projects={projects}
+                geminiKey={geminiKey}
+                onUpdateProjects={saveProjects}
               />
             )}
 

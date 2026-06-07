@@ -25,7 +25,7 @@ import {
 import { Yarn, ColorStorage } from '../types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from '../data/catalogSeeds';
 import { getBagNames, getColorTotalStock, normalizeBags } from '../utils/inventory';
-import { extractDesignPaletteWithAI, processCatalogWithAI } from '../utils/aiProcessor';
+import { processCatalogWithAI } from '../utils/aiProcessor';
 
 interface CatalogManagementProps {
   yarns: Yarn[];
@@ -98,27 +98,6 @@ export default function CatalogManagement({
   const [importStatus, setImportStatus] = useState<{ success?: number; error?: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [isDesignModalOpen, setIsDesignModalOpen] = useState(false);
-  const [isDesignProcessing, setIsDesignProcessing] = useState(false);
-  const [designFeedback, setDesignFeedback] = useState('');
-  const [designPalette, setDesignPalette] = useState<{ hex: string; name: string; weight: number }[] | null>(null);
-  const [designMatches, setDesignMatches] = useState<{
-    design: { hex: string; name: string; weight: number };
-    suggestions: {
-      yarnId: string;
-      yarnName: string;
-      brand: string;
-      colorCode: string;
-      colorName: string;
-      hex: string;
-      stock: number;
-      distance: number;
-      status: 'IN_STOCK' | 'OUT_OF_STOCK';
-    }[];
-    shouldBuy: boolean;
-  }[] | null>(null);
-  const designFileInputRef = useRef<HTMLInputElement>(null);
-
   // Filter lists
   const availableBrands = Array.from(new Set(yarns.map((y) => y.brand)));
   const availableCompositions = Array.from(new Set(yarns.map((y) => y.composition)));
@@ -129,111 +108,6 @@ export default function CatalogManagement({
       )
     ).sort((a, b) => a.localeCompare(b));
   }, [yarns]);
-
-  const catalogColorOptions = useMemo(() => {
-    return yarns.flatMap((yarn) =>
-      yarn.colors.map((color) => ({
-        yarnId: yarn.id,
-        yarnName: yarn.name,
-        brand: yarn.brand,
-        colorCode: color.code,
-        colorName: color.name,
-        hex: color.hex,
-        stock: getColorTotalStock(color),
-      }))
-    );
-  }, [yarns]);
-
-  const normalizeHex = (value: string): string | null => {
-    const v = value.trim().toUpperCase();
-    const match = v.match(/^#([0-9A-F]{6})$/);
-    return match ? `#${match[1]}` : null;
-  };
-
-  const hexToRgb = (hex: string): { r: number; g: number; b: number } | null => {
-    const clean = normalizeHex(hex);
-    if (!clean) return null;
-    const raw = clean.slice(1);
-    const r = parseInt(raw.slice(0, 2), 16);
-    const g = parseInt(raw.slice(2, 4), 16);
-    const b = parseInt(raw.slice(4, 6), 16);
-    return { r, g, b };
-  };
-
-  const rgbDistance = (a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number => {
-    const dr = a.r - b.r;
-    const dg = a.g - b.g;
-    const db = a.b - b.b;
-    return Math.sqrt(dr * dr + dg * dg + db * db);
-  };
-
-  const catalogColorOptionsRgb = useMemo(() => {
-    return catalogColorOptions
-      .map((opt) => {
-        const rgb = hexToRgb(opt.hex);
-        if (!rgb) return null;
-        return { ...opt, rgb };
-      })
-      .filter(Boolean) as (typeof catalogColorOptions[number] & { rgb: { r: number; g: number; b: number } })[];
-  }, [catalogColorOptions]);
-
-  const computeMatchesForPalette = (palette: { hex: string; name: string; weight: number }[]) => {
-    const results = palette
-      .map((c) => {
-        const designHex = normalizeHex(c.hex);
-        const designRgb = designHex ? hexToRgb(designHex) : null;
-        if (!designHex || !designRgb) {
-          return null;
-        }
-
-        const scored = catalogColorOptionsRgb
-          .map((opt) => ({
-            ...opt,
-            distance: rgbDistance(designRgb, opt.rgb),
-            status: opt.stock > 0 ? ('IN_STOCK' as const) : ('OUT_OF_STOCK' as const),
-          }))
-          .sort((a, b) => a.distance - b.distance)
-          .slice(0, 4)
-          .map((s) => ({
-            yarnId: s.yarnId,
-            yarnName: s.yarnName,
-            brand: s.brand,
-            colorCode: s.colorCode,
-            colorName: s.colorName,
-            hex: normalizeHex(s.hex) || s.hex,
-            stock: s.stock,
-            distance: Number(s.distance.toFixed(1)),
-            status: s.status,
-          }));
-
-        const bestDistance = scored[0]?.distance ?? Infinity;
-        const shouldBuy = bestDistance > 120;
-
-        return {
-          design: { hex: designHex, name: c.name || 'Color', weight: c.weight },
-          suggestions: scored,
-          shouldBuy,
-        };
-      })
-      .filter(Boolean) as {
-      design: { hex: string; name: string; weight: number };
-      suggestions: {
-        yarnId: string;
-        yarnName: string;
-        brand: string;
-        colorCode: string;
-        colorName: string;
-        hex: string;
-        stock: number;
-        distance: number;
-        status: 'IN_STOCK' | 'OUT_OF_STOCK';
-      }[];
-      shouldBuy: boolean;
-    }[];
-
-    results.sort((a, b) => (b.design.weight || 0) - (a.design.weight || 0));
-    return results;
-  };
 
   // Generate automatic SKU
   const generateSKU = (brand: string, yarnName: string, colorCode: string) => {
@@ -375,63 +249,6 @@ export default function CatalogManagement({
         setYarnForm(prev => ({ ...prev, catalogPdf: { name: file.name, data: base64Data } }));
       } finally {
         setIsProcessingAI(false);
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleDesignImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!geminiKey) {
-      alert('Por favor, configura tu API Key de Gemini en los ajustes para usar esta función.');
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      alert('Por favor, sube una imagen (PNG/JPG/WebP).');
-      return;
-    }
-
-    if (file.size > 6 * 1024 * 1024) {
-      alert('El archivo es demasiado grande (máx 6MB).');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64Data = reader.result as string;
-      setIsDesignProcessing(true);
-      setDesignFeedback('Analizando la imagen con IA para extraer paleta de colores...');
-      setDesignPalette(null);
-      setDesignMatches(null);
-
-      try {
-        const result = await extractDesignPaletteWithAI(geminiKey, base64Data, file.name);
-        const palette = (result.palette || [])
-          .map((c) => ({
-            hex: normalizeHex(c.hex) || c.hex,
-            name: c.name || 'Color',
-            weight: Number.isFinite(c.weight) ? c.weight : 0,
-          }))
-          .filter((c) => normalizeHex(c.hex))
-          .slice(0, 10);
-
-        if (palette.length === 0) {
-          setDesignFeedback('No se pudieron extraer colores con suficiente claridad. Prueba con otra imagen.');
-          return;
-        }
-
-        setDesignPalette(palette);
-        setDesignMatches(computeMatchesForPalette(palette));
-        setDesignFeedback(result.notes ? result.notes : 'Paleta detectada. Revisa recomendaciones de colores.');
-      } catch (err: any) {
-        alert(err?.message || 'Error al analizar la imagen con IA.');
-        setDesignFeedback('');
-      } finally {
-        setIsDesignProcessing(false);
-        if (designFileInputRef.current) designFileInputRef.current.value = '';
       }
     };
     reader.readAsDataURL(file);
@@ -741,23 +558,6 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
           >
             <Upload size={14} /> Importar Datos (Excel/CSV)
           </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (!geminiKey) {
-                alert('Configura tu API Key de Gemini en Configuración IA para usar esta función.');
-                return;
-              }
-              setIsDesignModalOpen(true);
-              setDesignFeedback('');
-              setDesignPalette(null);
-              setDesignMatches(null);
-            }}
-            className="flex-1 md:flex-initial flex items-center justify-center gap-1.5 py-2 px-3.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-semibold rounded-xl transition cursor-pointer"
-          >
-            <Sparkles size={14} /> Analizar diseño (IA)
-          </button>
           
           <button
             id="btn-add-yarn"
@@ -773,146 +573,6 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
           </button>
         </div>
       </div>
-
-      <AnimatePresence>
-        {isDesignModalOpen && (
-          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.98, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.98, opacity: 0 }}
-              className="bg-white rounded-3xl w-full max-w-3xl shadow-xl overflow-hidden"
-            >
-              <div className="bg-amber-600 p-5 text-white flex justify-between items-center">
-                <h3 className="font-bold text-base flex items-center gap-2">
-                  <Sparkles size={18} /> Asistente de colores (IA)
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setIsDesignModalOpen(false)}
-                  className="p-1.5 hover:bg-white/15 rounded-full transition"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
-                <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold text-slate-800">Sube una imagen del diseño</div>
-                    <div className="text-xs text-slate-500">
-                      La IA detecta la paleta y la app te propone colores del catálogo (en stock / sin stock).
-                    </div>
-                  </div>
-                  <div className="flex gap-2 shrink-0">
-                    <input
-                      ref={designFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      onChange={handleDesignImageUpload}
-                      className="hidden"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => designFileInputRef.current?.click()}
-                      className="py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition"
-                      disabled={isDesignProcessing}
-                    >
-                      <Upload size={14} className="inline mr-1" /> Subir imagen
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDesignModalOpen(false);
-                        setDesignFeedback('');
-                        setDesignPalette(null);
-                        setDesignMatches(null);
-                      }}
-                      className="py-2 px-3 border border-slate-200 text-slate-600 hover:bg-white text-xs font-bold rounded-xl transition"
-                    >
-                      Cerrar
-                    </button>
-                  </div>
-                </div>
-
-                {designFeedback && (
-                  <div className="text-xs text-slate-600 bg-white border border-slate-100 rounded-2xl p-4">
-                    {designFeedback}
-                  </div>
-                )}
-
-                {designMatches && designMatches.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="text-xs font-bold text-slate-700 uppercase tracking-widest">
-                      Recomendación de colores
-                    </div>
-                    <div className="space-y-3">
-                      {designMatches.map((row) => (
-                        <div key={`${row.design.hex}-${row.design.name}`} className="bg-white border border-slate-100 rounded-2xl p-4">
-                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                            <div className="flex items-center gap-3 min-w-0">
-                              <span
-                                className="w-10 h-10 rounded-full border border-slate-200 shadow-inner shrink-0"
-                                style={{ backgroundColor: row.design.hex }}
-                              />
-                              <div className="min-w-0">
-                                <div className="text-sm font-bold text-slate-800 truncate">
-                                  {row.design.name} <span className="font-mono text-xs text-slate-500">{row.design.hex}</span>
-                                </div>
-                                <div className="text-[11px] text-slate-500">
-                                  {row.shouldBuy ? 'No hay un color muy similar en tu catálogo: considera comprar una tela/lana parecida.' : 'Hay colores similares en tu catálogo.'}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="text-[11px] text-slate-500 font-mono">
-                              peso {Number(row.design.weight || 0).toFixed(2)}
-                            </div>
-                          </div>
-
-                          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
-                            {row.suggestions.map((sug) => (
-                              <div
-                                key={`${sug.yarnId}-${sug.colorCode}-${row.design.hex}`}
-                                className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 bg-slate-50/40"
-                              >
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span
-                                    className="w-6 h-6 rounded-full border border-slate-200 shrink-0"
-                                    style={{ backgroundColor: sug.hex }}
-                                  />
-                                  <div className="min-w-0">
-                                    <div className="text-xs font-bold text-slate-800 truncate">
-                                      {sug.brand} · {sug.yarnName}
-                                    </div>
-                                    <div className="text-[11px] text-slate-500 truncate">
-                                      #{sug.colorCode} {sug.colorName} · Δ {sug.distance}
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="text-right shrink-0">
-                                  {sug.status === 'IN_STOCK' ? (
-                                    <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded-full">
-                                      En stock ({sug.stock})
-                                    </div>
-                                  ) : (
-                                    <div className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded-full">
-                                      Sin stock
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Filter and catalog grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
