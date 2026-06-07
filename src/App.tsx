@@ -15,7 +15,7 @@ import {
   Settings
 } from 'lucide-react';
 
-import { Yarn, Movement } from './types';
+import { Bag, Yarn, Movement } from './types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from './data/catalogSeeds';
 import { normalizeYarn, clearYarnStock } from './utils/inventory';
 import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase, testSupabaseConnection } from './utils/supabase';
@@ -30,6 +30,7 @@ export default function App() {
   // Database States
   const [yarns, setYarns] = useState<Yarn[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [bags, setBags] = useState<Bag[]>([]);
   const [geminiKey, setGeminiKey] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('');
   const [supabaseKey, setSupabaseKey] = useState<string>('');
@@ -54,10 +55,40 @@ export default function App() {
         return unquoted.trim();
       };
 
-      const readRuntimeEnv = (name: string): unknown => {
-        const windowValue =
-          typeof window !== 'undefined' ? (window as any)?.__ENV__?.[name] : undefined;
-        return windowValue ?? (import.meta as any)?.env?.[name];
+      const normalizeBagName = (name: unknown): string => (typeof name === 'string' ? name.trim() : '');
+
+      const extractBagNamesFromYarns = (inputYarns: Yarn[]): string[] => {
+        const names = new Set<string>();
+        inputYarns.forEach((yarn) => {
+          yarn.colors.forEach((color) => {
+            (color.bags || []).forEach((bag) => {
+              const clean = normalizeBagName(bag.name);
+              if (clean) names.add(clean);
+            });
+          });
+        });
+        return Array.from(names);
+      };
+
+      const mergeBagsWithYarns = (existingBags: Bag[], inputYarns: Yarn[]): Bag[] => {
+        const byName = new Map<string, Bag>();
+        existingBags.forEach((bag) => {
+          const clean = normalizeBagName(bag.name);
+          if (!clean) return;
+          byName.set(clean, {
+            name: clean,
+            location: typeof bag.location === 'string' ? bag.location : '',
+            createdAt: typeof bag.createdAt === 'string' ? bag.createdAt : new Date().toISOString(),
+          });
+        });
+
+        extractBagNamesFromYarns(inputYarns).forEach((name) => {
+          if (!byName.has(name)) {
+            byName.set(name, { name, location: '', createdAt: new Date().toISOString() });
+          }
+        });
+
+        return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
       };
 
       const envGemini = import.meta.env.VITE_GEMINI_API_KEY;
@@ -78,6 +109,10 @@ export default function App() {
       const storedYarns = localStorage.getItem('tejestock_yarns_v1');
       const localYarns: Yarn[] | null = storedYarns ? JSON.parse(storedYarns).map(normalizeYarn) : null;
 
+      const storedBags = localStorage.getItem('tejestock_bags_v1');
+      const localBags: Bag[] =
+        storedBags && storedBags.trim() ? (JSON.parse(storedBags) as Bag[]) : [];
+
       setMovements([]);
       localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
 
@@ -90,28 +125,40 @@ export default function App() {
           const remoteYarns: Yarn[] | null =
             Array.isArray(remote) ? remote :
             (remote && Array.isArray((remote as any).yarns) ? (remote as any).yarns : null);
+          const remoteBags: Bag[] | null =
+            remote && Array.isArray((remote as any).bags) ? (remote as any).bags : null;
 
           if (remoteYarns && remoteYarns.length > 0) {
             const normalizedRemote = remoteYarns.map(normalizeYarn);
             setYarns(normalizedRemote);
             localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalizedRemote));
+            const nextBags = mergeBagsWithYarns(remoteBags || localBags, normalizedRemote);
+            setBags(nextBags);
+            localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
             setSyncStatus('synced');
             setLastCloudLoad({ count: normalizedRemote.length, at: new Date().toISOString() });
             return;
           }
 
           if (localYarns) {
-            const success = await syncYarnsToSupabase(localYarns);
+            const normalizedLocal = localYarns.map(normalizeYarn);
+            const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
+            const success = await syncYarnsToSupabase(normalizedLocal, nextBags);
             setSyncStatus(success ? 'synced' : 'offline');
-            setYarns(localYarns);
+            setYarns(normalizedLocal);
+            setBags(nextBags);
+            localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
             return;
           }
 
           const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
-          const success = await syncYarnsToSupabase(initialYarns);
+          const nextBags = mergeBagsWithYarns(localBags, initialYarns);
+          const success = await syncYarnsToSupabase(initialYarns, nextBags);
           setSyncStatus(success ? 'synced' : 'offline');
           setYarns(initialYarns);
+          setBags(nextBags);
           localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
+          localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
           if (success) setLastCloudLoad({ count: initialYarns.length, at: new Date().toISOString() });
           return;
         } else {
@@ -120,13 +167,20 @@ export default function App() {
       }
 
       if (localYarns) {
-        setYarns(localYarns);
+        const normalizedLocal = localYarns.map(normalizeYarn);
+        setYarns(normalizedLocal);
+        const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
+        setBags(nextBags);
+        localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
         return;
       }
 
       const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
       setYarns(initialYarns);
       localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
+      const nextBags = mergeBagsWithYarns(localBags, initialYarns);
+      setBags(nextBags);
+      localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
     };
 
     init();
@@ -134,13 +188,63 @@ export default function App() {
 
   // Save changes to localStorage whenever states change
   const saveYarns = async (updatedYarns: Yarn[]) => {
+    const normalizeBagName = (name: unknown): string => (typeof name === 'string' ? name.trim() : '');
+    const extractBagNamesFromYarns = (inputYarns: Yarn[]): string[] => {
+      const names = new Set<string>();
+      inputYarns.forEach((yarn) => {
+        yarn.colors.forEach((color) => {
+          (color.bags || []).forEach((bag) => {
+            const clean = normalizeBagName(bag.name);
+            if (clean) names.add(clean);
+          });
+        });
+      });
+      return Array.from(names);
+    };
+
+    const mergeBagsWithYarns = (existingBags: Bag[], inputYarns: Yarn[]): Bag[] => {
+      const byName = new Map<string, Bag>();
+      existingBags.forEach((bag) => {
+        const clean = normalizeBagName(bag.name);
+        if (!clean) return;
+        byName.set(clean, {
+          name: clean,
+          location: typeof bag.location === 'string' ? bag.location : '',
+          createdAt: typeof bag.createdAt === 'string' ? bag.createdAt : new Date().toISOString(),
+        });
+      });
+
+      extractBagNamesFromYarns(inputYarns).forEach((name) => {
+        if (!byName.has(name)) {
+          byName.set(name, { name, location: '', createdAt: new Date().toISOString() });
+        }
+      });
+
+      return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+    };
+
     const normalized = updatedYarns.map(normalizeYarn);
     setYarns(normalized);
     localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalized));
+
+    const nextBags = mergeBagsWithYarns(bags, normalized);
+    setBags(nextBags);
+    localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
     
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(normalized);
+      const success = await syncYarnsToSupabase(normalized, nextBags);
+      setSyncStatus(success ? 'synced' : 'offline');
+    }
+  };
+
+  const saveBags = async (updatedBags: Bag[]) => {
+    setBags(updatedBags);
+    localStorage.setItem('tejestock_bags_v1', JSON.stringify(updatedBags));
+
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      const success = await syncYarnsToSupabase(yarns, updatedBags);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
@@ -188,7 +292,7 @@ export default function App() {
           `- URL o Anon Key incorrectas.`
         );
       } else {
-        const success = await syncYarnsToSupabase(yarns);
+        const success = await syncYarnsToSupabase(yarns, bags);
         setSyncStatus(success ? 'synced' : 'offline');
       }
     } else {
@@ -277,13 +381,16 @@ export default function App() {
   const handleResetToDemo = () => {
     localStorage.removeItem('tejestock_yarns_v1');
     localStorage.removeItem('tejestock_moves_v1');
+    localStorage.removeItem('tejestock_bags_v1');
 
     const resetYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
     setYarns(resetYarns);
     setMovements([]);
+    setBags([]);
 
     localStorage.setItem('tejestock_yarns_v1', JSON.stringify(resetYarns));
     localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
+    localStorage.setItem('tejestock_bags_v1', JSON.stringify([]));
   };
 
   const handleRestoreBackup = (backup: any) => {
@@ -433,7 +540,9 @@ export default function App() {
             {activeTab === 'bags' && (
               <BagManagement 
                 yarns={yarns}
+                bags={bags}
                 onUpdateYarns={saveYarns}
+                onUpdateBags={saveBags}
               />
             )}
 

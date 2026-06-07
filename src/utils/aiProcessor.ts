@@ -79,3 +79,80 @@ export async function processCatalogWithAI(apiKey: string, fileData: string, fil
     throw error;
   }
 }
+
+export async function extractDesignPaletteWithAI(
+  apiKey: string,
+  fileData: string,
+  fileName: string
+): Promise<{ palette: { hex: string; name: string; weight: number }[]; notes?: string }> {
+  const cleanKey = apiKey.trim();
+  const genAI = new GoogleGenerativeAI(cleanKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
+
+  const mimeType = fileData.split(';')[0].split(':')[1];
+  const base64Content = fileData.split(',')[1];
+
+  const prompt = `
+Analiza esta imagen (diseño/textura/patrón) y extrae una paleta de colores dominante para reproducirla.
+
+Responde ÚNICAMENTE con un JSON válido con esta estructura:
+{
+  "palette": [
+    { "hex": "#RRGGBB", "name": "Nombre color (es-ES)", "weight": 0.0 }
+  ],
+  "notes": "opcional"
+}
+
+Reglas:
+- Devuelve entre 5 y 10 colores.
+- "hex" debe estar en formato #RRGGBB.
+- "weight" es un número entre 0 y 1 que representa importancia relativa (no tiene por qué sumar 1).
+- No incluyas texto fuera del JSON.
+`;
+
+  try {
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          data: base64Content,
+          mimeType: mimeType
+        }
+      }
+    ]);
+
+    const response = await result.response;
+    const text = response.text();
+    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
+    const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("La IA no devolvió un formato de datos válido. Prueba a subir la imagen de nuevo.");
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const paletteRaw = Array.isArray(parsed?.palette) ? parsed.palette : [];
+
+    const palette = paletteRaw
+      .map((item: any) => ({
+        hex: typeof item?.hex === 'string' ? item.hex.trim() : '',
+        name: typeof item?.name === 'string' ? item.name.trim() : '',
+        weight: Number(item?.weight) || 0
+      }))
+      .filter((c: any) => c.hex);
+
+    return {
+      palette,
+      notes: typeof parsed?.notes === 'string' ? parsed.notes : undefined
+    };
+  } catch (error: any) {
+    console.error("Error calling Gemini:", error);
+    if (error.message?.includes('API_KEY_INVALID')) {
+      throw new Error("La API Key de Gemini no es válida. Por favor, revísala en Configuración.");
+    }
+    if (error.message?.includes('SAFETY')) {
+      throw new Error("La IA bloqueó el contenido por seguridad. Intenta con otra imagen.");
+    }
+    throw error;
+  }
+}

@@ -19,6 +19,12 @@ export interface BagStock {
   quantity: number;
 }
 
+export interface Bag {
+  name: string;
+  location: string;
+  createdAt: string;
+}
+
 export interface Yarn {
   id: string;
   name: string;

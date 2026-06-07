@@ -8,6 +8,7 @@ import { motion } from 'motion/react';
 import { 
   ShoppingBag, 
   Search, 
+  MapPin,
   Edit3, 
   Trash2, 
   X, 
@@ -15,15 +16,18 @@ import {
   Plus,
   Minus
 } from 'lucide-react';
-import { Yarn, ColorStorage } from '../types';
+import { Bag, Yarn, ColorStorage } from '../types';
 
 interface BagManagementProps {
   yarns: Yarn[];
+  bags: Bag[];
   onUpdateYarns: (yarns: Yarn[]) => void;
+  onUpdateBags: (bags: Bag[]) => void;
 }
 
 interface BagSummary {
   name: string;
+  location: string;
   totalItems: number;
   items: {
     yarn: Yarn;
@@ -32,10 +36,14 @@ interface BagSummary {
   }[];
 }
 
-export default function BagManagement({ yarns, onUpdateYarns }: BagManagementProps) {
+export default function BagManagement({ yarns, bags, onUpdateYarns, onUpdateBags }: BagManagementProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [editingBagName, setEditingBagName] = useState<string | null>(null);
   const [newBagName, setNewBagName] = useState('');
+  const [newBagLocation, setNewBagLocation] = useState('');
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [createBagName, setCreateBagName] = useState('');
+  const [createBagLocation, setCreateBagLocation] = useState('');
   const [addingToBag, setAddingToBag] = useState<string | null>(null);
   const [addSelectedYarnId, setAddSelectedYarnId] = useState<string>('');
   const [addSelectedColorCode, setAddSelectedColorCode] = useState<string>('');
@@ -52,6 +60,17 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
   const allBags = useMemo(() => {
     const bagMap = new Map<string, BagSummary>();
 
+    bags.forEach((bag) => {
+      const name = bag.name.trim();
+      if (!name) return;
+      bagMap.set(name, {
+        name,
+        location: (bag.location || '').trim(),
+        totalItems: 0,
+        items: [],
+      });
+    });
+
     yarns.forEach((yarn) => {
       yarn.colors.forEach((color) => {
         if (!color.bags) return;
@@ -60,6 +79,7 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
 
           const existing = bagMap.get(bag.name) || {
             name: bag.name,
+            location: '',
             totalItems: 0,
             items: []
           };
@@ -77,11 +97,79 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
     });
 
     return Array.from(bagMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [yarns]);
+  }, [yarns, bags]);
   
   const filteredBags = allBags.filter(bag => 
-    bag.name.toLowerCase().includes(searchTerm.toLowerCase())
+    bag.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    bag.location.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const handleCreateBag = () => {
+    const name = createBagName.trim();
+    const location = createBagLocation.trim();
+    if (!name) return;
+
+    const exists = allBags.some((b) => b.name.trim().toLowerCase() === name.toLowerCase());
+    if (exists) {
+      alert('Ya existe una bolsa con ese nombre.');
+      return;
+    }
+
+    onUpdateBags([
+      ...bags,
+      {
+        name,
+        location,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    setCreateBagName('');
+    setCreateBagLocation('');
+    setIsCreateOpen(false);
+  };
+
+  const handleSaveBagMeta = (oldName: string) => {
+    const nextName = newBagName.trim();
+    const nextLocation = newBagLocation.trim();
+    if (!nextName) return;
+
+    const conflict = allBags.some(
+      (b) =>
+        b.name.trim().toLowerCase() === nextName.toLowerCase() &&
+        b.name.trim().toLowerCase() !== oldName.trim().toLowerCase()
+    );
+    if (conflict) {
+      alert('Ya existe otra bolsa con ese nombre.');
+      return;
+    }
+
+    if (nextName !== oldName) {
+      const updatedYarns = yarns.map((yarn) => ({
+        ...yarn,
+        colors: yarn.colors.map((color) => ({
+          ...color,
+          bags: color.bags?.map((bag) => (bag.name === oldName ? { ...bag, name: nextName } : bag)),
+        })),
+      }));
+      onUpdateYarns(updatedYarns);
+    }
+
+    const withoutOld = bags.filter((b) => b.name.trim().toLowerCase() !== oldName.trim().toLowerCase());
+    const oldFromList = bags.find((b) => b.name.trim().toLowerCase() === oldName.trim().toLowerCase());
+    onUpdateBags([
+      ...withoutOld,
+      {
+        name: nextName,
+        location: nextLocation,
+        createdAt: oldFromList?.createdAt || new Date().toISOString(),
+      },
+    ]);
+
+    setEditingBagName(null);
+    setNewBagName('');
+    setNewBagLocation('');
+  };
 
   const updateBagQuantity = (yarnId: string, colorCode: string, bagName: string, delta: number) => {
     if (!bagName.trim() || delta === 0) return;
@@ -120,27 +208,6 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
     onUpdateYarns(updatedYarns);
   };
 
-  const handleRenameBag = (oldName: string) => {
-    if (!newBagName.trim() || newBagName === oldName) {
-      setEditingBagName(null);
-      return;
-    }
-
-    const updatedYarns = yarns.map(yarn => ({
-      ...yarn,
-      colors: yarn.colors.map(color => ({
-        ...color,
-        bags: color.bags?.map(bag => 
-          bag.name === oldName ? { ...bag, name: newBagName.trim() } : bag
-        )
-      }))
-    }));
-
-    onUpdateYarns(updatedYarns);
-    setEditingBagName(null);
-    setNewBagName('');
-  };
-
   const handleDeleteBag = (bagName: string) => {
     if (!confirm(`¿Estás seguro de que quieres eliminar la bolsa "${bagName}"? Los ovillos se quedarán sin bolsa asignada.`)) {
       return;
@@ -155,6 +222,9 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
     }));
 
     onUpdateYarns(updatedYarns);
+    onUpdateBags(bags.filter((b) => b.name.trim().toLowerCase() !== bagName.trim().toLowerCase()));
+    if (addingToBag === bagName) setAddingToBag(null);
+    if (editingBagName === bagName) setEditingBagName(null);
   };
 
   const startAddToBag = (bagName: string) => {
@@ -184,24 +254,84 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
           <p className="text-xs text-gray-500 font-medium">Organiza tus bolsas, cámbiales el nombre o mira qué hay dentro de cada una.</p>
         </div>
 
-        <div className="relative w-full md:w-64">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Buscar bolsa..."
-            className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 pl-9 pr-4 text-sm text-gray-800 transition"
-          />
+        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          <div className="relative w-full md:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Buscar bolsa..."
+              className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 pl-9 pr-4 text-sm text-gray-800 transition"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsCreateOpen((v) => !v)}
+            className="inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition shrink-0"
+          >
+            <Plus size={14} /> Crear bolsa
+          </button>
         </div>
       </div>
+
+      {isCreateOpen && (
+        <div className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_140px] gap-3 items-end">
+            <div>
+              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
+                Nombre de bolsa
+              </label>
+              <input
+                type="text"
+                value={createBagName}
+                onChange={(e) => setCreateBagName(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                placeholder='Ej. "Bolsa 1"'
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">
+                Lugar donde está
+              </label>
+              <input
+                type="text"
+                value={createBagLocation}
+                onChange={(e) => setCreateBagLocation(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                placeholder='Ej. "Estantería A / cajón 2"'
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleCreateBag}
+                className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition"
+              >
+                Crear
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCreateOpen(false);
+                  setCreateBagName('');
+                  setCreateBagLocation('');
+                }}
+                className="flex-1 py-2 px-3 border border-gray-200 text-gray-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {filteredBags.length === 0 ? (
         <div className="bg-white p-12 text-center rounded-3xl border border-dashed border-gray-200 flex flex-col items-center justify-center space-y-3">
           <ShoppingBag size={48} className="text-gray-300 stroke-1" />
           <h3 className="font-bold text-gray-700 text-sm">No hay bolsas registradas</h3>
           <p className="text-xs text-gray-400 max-w-sm">
-            Las bolsas aparecen automáticamente cuando las asignas a tus colores en el Catálogo.
+            Puedes crearlas aquí y luego asignar ovillos desde esta misma pantalla o desde el Catálogo.
           </p>
         </div>
       ) : (
@@ -216,27 +346,39 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
                 <div className="flex justify-between items-start mb-2">
                   <div className="flex-1 min-w-0 pr-2">
                     {editingBagName === bag.name ? (
-                      <div className="flex items-center gap-2">
+                      <div className="space-y-2">
                         <input
                           autoFocus
                           type="text"
                           value={newBagName}
                           onChange={(e) => setNewBagName(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleRenameBag(bag.name)}
                           className="w-full bg-white border border-orange-500 focus:outline-none rounded-lg px-2 py-1 text-sm font-bold text-gray-800"
                         />
-                        <button 
-                          onClick={() => handleRenameBag(bag.name)}
-                          className="p-1 bg-green-50 text-green-600 rounded-md hover:bg-green-100"
-                        >
-                          <Check size={16} />
-                        </button>
-                        <button 
-                          onClick={() => setEditingBagName(null)}
-                          className="p-1 bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200"
-                        >
-                          <X size={16} />
-                        </button>
+                        <input
+                          type="text"
+                          value={newBagLocation}
+                          onChange={(e) => setNewBagLocation(e.target.value)}
+                          className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-lg px-2 py-1 text-xs text-gray-700"
+                          placeholder="Lugar donde está (opcional)"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => handleSaveBagMeta(bag.name)}
+                            className="p-1 bg-green-50 text-green-600 rounded-md hover:bg-green-100"
+                          >
+                            <Check size={16} />
+                          </button>
+                          <button 
+                            onClick={() => {
+                              setEditingBagName(null);
+                              setNewBagName('');
+                              setNewBagLocation('');
+                            }}
+                            className="p-1 bg-gray-100 text-gray-600 rounded-md hover:bg-gray-200"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <h3 className="font-bold text-gray-800 truncate flex items-center gap-2">
@@ -259,6 +401,7 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
                       onClick={() => {
                         setEditingBagName(bag.name);
                         setNewBagName(bag.name);
+                        setNewBagLocation(bag.location);
                       }}
                       className="p-1.5 hover:bg-white text-gray-400 hover:text-gray-700 rounded-lg transition"
                     >
@@ -276,6 +419,10 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
                   <span className="font-bold text-gray-700">{bag.totalItems} ovillos</span>
                   <span>·</span>
                   <span>{bag.items.length} variaciones</span>
+                </div>
+                <div className="mt-2 text-[11px] text-gray-500 flex items-center gap-1.5">
+                  <MapPin size={12} className="text-gray-400" />
+                  <span className="truncate">{bag.location ? bag.location : 'Sin ubicación'}</span>
                 </div>
               </div>
 
