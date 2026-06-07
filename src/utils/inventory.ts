@@ -18,26 +18,18 @@ export function normalizeBags(color: ColorStorage): BagStock[] {
       }));
   }
 
-  if ((Number(color.stock) || 0) > 0) {
-    return [
-      {
-        name: color.location || 'Bolsa principal',
-        quantity: Number(color.stock) || 0,
-      },
-    ];
-  }
-
   return [];
 }
 
 export function normalizeColor(color: ColorStorage): ColorStorage {
   const bags = normalizeBags(color);
+  const stock = bags.length > 0 ? bags.reduce((sum, bag) => sum + bag.quantity, 0) : Math.max(0, Number(color.stock) || 0);
 
   return {
     ...color,
     bags,
-    location: bags[0]?.name || color.location || 'Sin bolsa',
-    stock: bags.reduce((sum, bag) => sum + bag.quantity, 0),
+    location: bags[0]?.name || 'Sin bolsa',
+    stock,
   };
 }
 

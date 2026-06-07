@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   BarChart3, 
@@ -16,9 +16,9 @@ import {
 } from 'lucide-react';
 
 import { Yarn, Movement } from './types';
-import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED, INITIAL_MOVEMENTS_SEED } from './data/catalogSeeds';
+import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from './data/catalogSeeds';
 import { normalizeYarn, clearYarnStock } from './utils/inventory';
-import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase } from './utils/supabase';
+import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase, testSupabaseConnection } from './utils/supabase';
 
 // Components
 import Dashboard from './components/Dashboard';
@@ -34,6 +34,8 @@ export default function App() {
   const [supabaseUrl, setSupabaseUrl] = useState<string>('');
   const [supabaseKey, setSupabaseKey] = useState<string>('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline'>('offline');
+  const [lastCloudLoad, setLastCloudLoad] = useState<{ count: number; at: string } | null>(null);
   
   // App navigation, UI states
   const [activeTab, setActiveTab] = useState<'inventory' | 'catalog' | 'bags' | 'backup'>('inventory');
@@ -41,58 +43,174 @@ export default function App() {
 
   // Initialize DB from localStorage or seeds
   useEffect(() => {
-    // 1. Yarns setup
-    const storedYarns = localStorage.getItem('tejestock_yarns_v1');
-    if (storedYarns) {
-      setYarns(JSON.parse(storedYarns).map(normalizeYarn).map(clearYarnStock));
-    } else {
+    const init = async () => {
+      const cleanValue = (value: unknown): string => {
+        if (typeof value !== 'string') return '';
+        const trimmed = value.trim();
+        const unquoted =
+          (trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+            ? trimmed.slice(1, -1)
+            : trimmed;
+        return unquoted.trim();
+      };
+
+      const readRuntimeEnv = (name: string): unknown => {
+        const windowValue =
+          typeof window !== 'undefined' ? (window as any)?.__ENV__?.[name] : undefined;
+        return windowValue ?? (import.meta as any)?.env?.[name];
+      };
+
+      const envGemini = readRuntimeEnv('VITE_GEMINI_API_KEY');
+      const storedKey = localStorage.getItem('tejestock_gemini_key');
+      const initialGeminiKey = cleanValue(envGemini || storedKey || '');
+      if (initialGeminiKey) setGeminiKey(initialGeminiKey);
+
+      const storedSupaUrlRaw =
+        localStorage.getItem('tejestock_supabase_url') || readRuntimeEnv('VITE_SUPABASE_URL');
+      const storedSupaKeyRaw =
+        localStorage.getItem('tejestock_supabase_key') || readRuntimeEnv('VITE_SUPABASE_ANON_KEY');
+
+      const storedSupaUrl = cleanValue(storedSupaUrlRaw);
+      const storedSupaKey = cleanValue(storedSupaKeyRaw);
+      if (storedSupaUrl) setSupabaseUrl(storedSupaUrl);
+      if (storedSupaKey) setSupabaseKey(storedSupaKey);
+
+      const storedYarns = localStorage.getItem('tejestock_yarns_v1');
+      const localYarns: Yarn[] | null = storedYarns ? JSON.parse(storedYarns).map(normalizeYarn) : null;
+
+      setMovements([]);
+      localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
+
+      const supaClient = getSupabase(storedSupaUrl || undefined, storedSupaKey || undefined);
+      if (supaClient) {
+        setSyncStatus('syncing');
+        const test = await testSupabaseConnection();
+        if (test.ok) {
+          const remote = await loadYarnsFromSupabase();
+          const remoteYarns: Yarn[] | null =
+            Array.isArray(remote) ? remote :
+            (remote && Array.isArray((remote as any).yarns) ? (remote as any).yarns : null);
+
+          if (remoteYarns && remoteYarns.length > 0) {
+            const normalizedRemote = remoteYarns.map(normalizeYarn);
+            setYarns(normalizedRemote);
+            localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalizedRemote));
+            setSyncStatus('synced');
+            setLastCloudLoad({ count: normalizedRemote.length, at: new Date().toISOString() });
+            return;
+          }
+
+          if (localYarns) {
+            const success = await syncYarnsToSupabase(localYarns);
+            setSyncStatus(success ? 'synced' : 'offline');
+            setYarns(localYarns);
+            return;
+          }
+
+          const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
+          const success = await syncYarnsToSupabase(initialYarns);
+          setSyncStatus(success ? 'synced' : 'offline');
+          setYarns(initialYarns);
+          localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
+          if (success) setLastCloudLoad({ count: initialYarns.length, at: new Date().toISOString() });
+          return;
+        } else {
+          setSyncStatus('offline');
+        }
+      }
+
+      if (localYarns) {
+        setYarns(localYarns);
+        return;
+      }
+
       const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
       setYarns(initialYarns);
       localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
-    }
+    };
 
-    // 2. Movements setup
-    setMovements([]);
-    localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
-
-    // 3. API Key setup
-    const storedKey = localStorage.getItem('tejestock_gemini_key');
-    if (storedKey) setGeminiKey(storedKey);
-
-    const storedSupaUrl = localStorage.getItem('tejestock_supabase_url');
-    const storedSupaKey = localStorage.getItem('tejestock_supabase_key');
-    if (storedSupaUrl) setSupabaseUrl(storedSupaUrl);
-    if (storedSupaKey) setSupabaseKey(storedSupaKey);
-
-    // 4. Try to load from Supabase if configured
-    if (storedSupaUrl && storedSupaKey) {
-      loadYarnsFromSupabase().then(data => {
-        if (data) setYarns(data);
-      });
-    }
+    init();
   }, []);
 
   // Save changes to localStorage whenever states change
-  const saveYarns = (updatedYarns: Yarn[]) => {
+  const saveYarns = async (updatedYarns: Yarn[]) => {
     const normalized = updatedYarns.map(normalizeYarn);
     setYarns(normalized);
     localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalized));
-    syncYarnsToSupabase(normalized);
+    
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      const success = await syncYarnsToSupabase(normalized);
+      setSyncStatus(success ? 'synced' : 'offline');
+    }
   };
 
-  const saveConfig = (gemini: string, supaUrl: string, supaKey: string) => {
-    setGeminiKey(gemini);
-    localStorage.setItem('tejestock_gemini_key', gemini);
-    
-    setSupabaseUrl(supaUrl);
-    setSupabaseKey(supaKey);
-    localStorage.setItem('tejestock_supabase_url', supaUrl);
-    localStorage.setItem('tejestock_supabase_key', supaKey);
-    
-    // Reset connection
-    getSupabase(supaUrl, supaKey);
-    
+  const saveConfig = async (gemini: string, supaUrl: string, supaKey: string) => {
+    const cleanValue = (value: string) => value.trim();
+    const nextGeminiKey = cleanValue(gemini);
+    const nextSupabaseUrl = cleanValue(supaUrl);
+    const nextSupabaseKey = cleanValue(supaKey);
+
+    setGeminiKey(nextGeminiKey);
+    setSupabaseUrl(nextSupabaseUrl);
+    setSupabaseKey(nextSupabaseKey);
+
+    if (nextGeminiKey) {
+      localStorage.setItem('tejestock_gemini_key', nextGeminiKey);
+    } else {
+      localStorage.removeItem('tejestock_gemini_key');
+    }
+
+    if (nextSupabaseUrl) {
+      localStorage.setItem('tejestock_supabase_url', nextSupabaseUrl);
+    } else {
+      localStorage.removeItem('tejestock_supabase_url');
+    }
+
+    if (nextSupabaseKey) {
+      localStorage.setItem('tejestock_supabase_key', nextSupabaseKey);
+    } else {
+      localStorage.removeItem('tejestock_supabase_key');
+    }
+
+    getSupabase(nextSupabaseUrl, nextSupabaseKey);
+
+    if (nextSupabaseUrl && nextSupabaseKey) {
+      setSyncStatus('syncing');
+      const test = await testSupabaseConnection();
+      if (!test.ok) {
+        setSyncStatus('offline');
+        alert(
+          `Supabase no está accesible todavía.\n\n${test.message}\n\n` +
+          `Causas típicas:\n` +
+          `- No existe la tabla \"inventory\".\n` +
+          `- RLS activado sin políticas.\n` +
+          `- URL o Anon Key incorrectas.`
+        );
+      } else {
+        const success = await syncYarnsToSupabase(yarns);
+        setSyncStatus(success ? 'synced' : 'offline');
+      }
+    } else {
+      setSyncStatus('offline');
+    }
+
     setIsSettingsOpen(false);
+  };
+
+  const clearSavedKeys = () => {
+    localStorage.removeItem('tejestock_gemini_key');
+    localStorage.removeItem('tejestock_supabase_url');
+    localStorage.removeItem('tejestock_supabase_key');
+    const client = getSupabase();
+    if (client) {
+      setSyncStatus('syncing');
+      testSupabaseConnection().then((result) => {
+        setSyncStatus(result.ok ? 'synced' : 'offline');
+      });
+    } else {
+      setSyncStatus('offline');
+    }
   };
 
   const saveMovements = (updatedMovements: Movement[]) => {
@@ -190,14 +308,28 @@ export default function App() {
             <h1 className="text-xl font-black text-white flex items-center gap-2">
               🧶 TejeStock
             </h1>
-            <button
-              id="mobile-menu-toggle"
-              type="button"
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="md:hidden text-gray-400 hover:text-white transition cursor-pointer p-1"
-            >
-              {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
+            <div className="flex items-center gap-4">
+              {supabaseUrl && supabaseKey && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+                  <div className={`w-1.5 h-1.5 rounded-full ${
+                    syncStatus === 'synced' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' : 
+                    syncStatus === 'syncing' ? 'bg-orange-500 animate-pulse' : 
+                    'bg-gray-500'
+                  }`} />
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                    {syncStatus === 'synced' ? 'Nube OK' : syncStatus === 'syncing' ? 'Sincronizando...' : 'Sin Conexión'}
+                  </span>
+                </div>
+              )}
+              <button
+                id="mobile-menu-toggle"
+                type="button"
+                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                className="md:hidden text-gray-400 hover:text-white transition cursor-pointer p-1"
+              >
+                {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+            </div>
           </div>
 
           {/* Navigation Links list */}
@@ -359,6 +491,14 @@ export default function App() {
                   <h4 className="text-[10px] font-bold text-blue-600 uppercase tracking-widest border-b border-blue-100 pb-2">
                     Base de Datos (Supabase)
                   </h4>
+                  <div className="text-[10px] text-gray-500 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2">
+                    Estado: <span className="font-bold">{syncStatus === 'synced' ? 'Nube OK' : syncStatus === 'syncing' ? 'Sincronizando…' : 'Sin conexión'}</span>
+                    {lastCloudLoad && (
+                      <span className="block mt-1">
+                        Última carga desde nube: <span className="font-bold">{lastCloudLoad.count}</span> lanas ({new Date(lastCloudLoad.at).toLocaleString('es-ES')})
+                      </span>
+                    )}
+                  </div>
                   <div>
                     <label className="block text-[10px] font-bold text-gray-400 mb-2 uppercase tracking-wider">
                       Supabase Project URL
@@ -417,6 +557,19 @@ export default function App() {
                   >
                     ¿Cómo creo mi base de datos en Supabase?
                   </a>
+                </div>
+
+                <div className="pt-4 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={clearSavedKeys}
+                    className="w-full py-2.5 px-3 border border-red-200 text-red-600 hover:bg-red-50 text-xs font-bold rounded-xl transition"
+                  >
+                    Borrar claves guardadas en este navegador
+                  </button>
+                  <p className="text-[10px] text-gray-400 mt-2 text-center">
+                    Si usas .env.local, la app seguirá funcionando aunque borres estas claves.
+                  </p>
                 </div>
               </div>
             </motion.div>

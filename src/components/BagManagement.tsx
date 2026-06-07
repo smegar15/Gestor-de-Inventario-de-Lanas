@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { useMemo, useState } from 'react';
+import { motion } from 'motion/react';
 import { 
   ShoppingBag, 
   Search, 
@@ -12,8 +12,8 @@ import {
   Trash2, 
   X, 
   Check, 
-  ChevronRight,
-  Package
+  Plus,
+  Minus
 } from 'lucide-react';
 import { Yarn, ColorStorage } from '../types';
 
@@ -36,16 +36,28 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
   const [searchTerm, setSearchTerm] = useState('');
   const [editingBagName, setEditingBagName] = useState<string | null>(null);
   const [newBagName, setNewBagName] = useState('');
+  const [addingToBag, setAddingToBag] = useState<string | null>(null);
+  const [addSelectedYarnId, setAddSelectedYarnId] = useState<string>('');
+  const [addSelectedColorCode, setAddSelectedColorCode] = useState<string>('');
+  const [addQuantity, setAddQuantity] = useState<number>(1);
 
-  // Aggregate all bags
-  const bagMap = new Map<string, BagSummary>();
+  const allColorsByYarn = useMemo(() => {
+    const map = new Map<string, ColorStorage[]>();
+    yarns.forEach((yarn) => {
+      map.set(yarn.id, yarn.colors);
+    });
+    return map;
+  }, [yarns]);
 
-  yarns.forEach((yarn) => {
-    yarn.colors.forEach((color) => {
-      if (color.bags) {
+  const allBags = useMemo(() => {
+    const bagMap = new Map<string, BagSummary>();
+
+    yarns.forEach((yarn) => {
+      yarn.colors.forEach((color) => {
+        if (!color.bags) return;
         color.bags.forEach((bag) => {
           if (!bag.name.trim()) return;
-          
+
           const existing = bagMap.get(bag.name) || {
             name: bag.name,
             totalItems: 0,
@@ -61,15 +73,52 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
 
           bagMap.set(bag.name, existing);
         });
-      }
+      });
     });
-  });
 
-  const allBags = Array.from(bagMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(bagMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [yarns]);
   
   const filteredBags = allBags.filter(bag => 
     bag.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const updateBagQuantity = (yarnId: string, colorCode: string, bagName: string, delta: number) => {
+    if (!bagName.trim() || delta === 0) return;
+
+    const updatedYarns = yarns.map((yarn) => {
+      if (yarn.id !== yarnId) return yarn;
+
+      return {
+        ...yarn,
+        colors: yarn.colors.map((color) => {
+          if (color.code !== colorCode) return color;
+
+          const currentBags = color.bags ? [...color.bags] : [];
+          const index = currentBags.findIndex((bag) => bag.name === bagName);
+          const currentQty = index >= 0 ? currentBags[index].quantity : 0;
+          const nextQty = Math.max(0, Number(currentQty) + delta);
+
+          if (index >= 0) {
+            if (nextQty === 0) {
+              currentBags.splice(index, 1);
+            } else {
+              currentBags[index] = { ...currentBags[index], quantity: nextQty };
+            }
+          } else if (nextQty > 0) {
+            currentBags.push({ name: bagName, quantity: nextQty });
+          }
+
+          return {
+            ...color,
+            bags: currentBags
+          };
+        })
+      };
+    });
+
+    onUpdateYarns(updatedYarns);
+  };
 
   const handleRenameBag = (oldName: string) => {
     if (!newBagName.trim() || newBagName === oldName) {
@@ -106,6 +155,25 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
     }));
 
     onUpdateYarns(updatedYarns);
+  };
+
+  const startAddToBag = (bagName: string) => {
+    setAddingToBag(bagName);
+    const firstYarn = yarns[0];
+    if (firstYarn) {
+      setAddSelectedYarnId(firstYarn.id);
+      setAddSelectedColorCode(firstYarn.colors[0]?.code || '');
+    } else {
+      setAddSelectedYarnId('');
+      setAddSelectedColorCode('');
+    }
+    setAddQuantity(1);
+  };
+
+  const handleAddSubmit = (bagName: string) => {
+    if (!addSelectedYarnId || !addSelectedColorCode) return;
+    updateBagQuantity(addSelectedYarnId, addSelectedColorCode, bagName, Math.max(1, Number(addQuantity) || 1));
+    setAddQuantity(1);
   };
 
   return (
@@ -180,6 +248,14 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
                   
                   <div className="flex gap-1 shrink-0">
                     <button
+                      type="button"
+                      onClick={() => (addingToBag === bag.name ? setAddingToBag(null) : startAddToBag(bag.name))}
+                      className="p-1.5 hover:bg-emerald-50 text-gray-400 hover:text-emerald-700 rounded-lg transition"
+                      title="Añadir ovillos a esta bolsa"
+                    >
+                      <Plus size={14} />
+                    </button>
+                    <button
                       onClick={() => {
                         setEditingBagName(bag.name);
                         setNewBagName(bag.name);
@@ -216,12 +292,90 @@ export default function BagManagement({ yarns, onUpdateYarns }: BagManagementPro
                         <span className="text-gray-400 truncate block">{item.color.name} #{item.color.code}</span>
                       </div>
                     </div>
-                    <span className="font-mono font-bold text-gray-600 bg-gray-50 px-2 py-0.5 rounded-md">
-                      {item.quantity}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateBagQuantity(item.yarn.id, item.color.code, bag.name, -1)}
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-lg bg-gray-50 text-gray-600 hover:bg-gray-100"
+                        title="Quitar 1"
+                      >
+                        <Minus size={12} />
+                      </button>
+                      <span className="font-mono font-bold text-gray-600 bg-gray-50 px-2 py-0.5 rounded-md min-w-[40px] text-center">
+                        {item.quantity}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => updateBagQuantity(item.yarn.id, item.color.code, bag.name, 1)}
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-lg bg-orange-50 text-orange-700 hover:bg-orange-100"
+                        title="Añadir 1"
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
+
+              {addingToBag === bag.name && (
+                <div className="p-4 border-t border-gray-100 bg-slate-50/40 space-y-3">
+                  <div className="grid grid-cols-1 gap-2">
+                    <select
+                      value={addSelectedYarnId}
+                      onChange={(e) => {
+                        const nextYarnId = e.target.value;
+                        setAddSelectedYarnId(nextYarnId);
+                        const colors = allColorsByYarn.get(nextYarnId) || [];
+                        setAddSelectedColorCode(colors[0]?.code || '');
+                      }}
+                      className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-xs text-gray-800 transition"
+                    >
+                      {yarns.map((yarn) => (
+                        <option key={yarn.id} value={yarn.id}>
+                          {yarn.brand} · {yarn.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={addSelectedColorCode}
+                      onChange={(e) => setAddSelectedColorCode(e.target.value)}
+                      className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-xs text-gray-800 transition"
+                    >
+                      {(allColorsByYarn.get(addSelectedYarnId) || []).map((color) => (
+                        <option key={color.code} value={color.code}>
+                          {color.code} · {color.name}
+                        </option>
+                      ))}
+                    </select>
+
+                    <div className="grid grid-cols-[1fr_120px] gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        value={addQuantity}
+                        onChange={(e) => setAddQuantity(Math.max(1, Number(e.target.value) || 1))}
+                        className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-xs text-gray-800 transition font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleAddSubmit(bag.name)}
+                        className="w-full py-2 px-3 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition"
+                      >
+                        Añadir
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setAddingToBag(null)}
+                    className="w-full py-2 px-3 border border-gray-200 text-gray-500 hover:bg-white text-xs font-bold rounded-xl transition"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              )}
             </motion.div>
           ))}
         </div>

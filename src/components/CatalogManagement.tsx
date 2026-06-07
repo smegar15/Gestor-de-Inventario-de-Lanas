@@ -3,11 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, 
   Plus, 
+  ChevronUp,
+  ChevronDown,
   Edit3, 
   Trash2, 
   Sparkles, 
@@ -20,7 +22,7 @@ import {
   FileText,
   Check,
 } from 'lucide-react';
-import { Yarn, ColorStorage, BagStock } from '../types';
+import { Yarn, ColorStorage } from '../types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from '../data/catalogSeeds';
 import { getBagNames, getColorTotalStock, normalizeBags } from '../utils/inventory';
 import { processCatalogWithAI } from '../utils/aiProcessor';
@@ -42,11 +44,6 @@ export default function CatalogManagement({
   onBulkImport,
   geminiKey
 }: CatalogManagementProps) {
-  const createEmptyBag = (): BagStock => ({
-    name: '',
-    quantity: 0,
-  });
-
   // Navigation states
   const [selectedYarnId, setSelectedYarnId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -85,10 +82,12 @@ export default function CatalogManagement({
     code: '',
     name: '',
     hex: '#FF6B6B',
+    stock: 0,
+    bagName: '',
     minStock: 5,
     sku: '',
-    bags: [createEmptyBag()]
   });
+  const [colorSearchTerm, setColorSearchTerm] = useState('');
 
   // Bulky Import states
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -102,6 +101,13 @@ export default function CatalogManagement({
   // Filter lists
   const availableBrands = Array.from(new Set(yarns.map((y) => y.brand)));
   const availableCompositions = Array.from(new Set(yarns.map((y) => y.composition)));
+  const availableBagNames = useMemo(() => {
+    return Array.from(
+      new Set(
+        yarns.flatMap((y) => y.colors.flatMap((c) => getBagNames(c)))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }, [yarns]);
 
   // Generate automatic SKU
   const generateSKU = (brand: string, yarnName: string, colorCode: string) => {
@@ -128,6 +134,9 @@ export default function CatalogManagement({
   });
 
   const selectedYarn = yarns.find((y) => y.id === selectedYarnId);
+  useEffect(() => {
+    setColorSearchTerm('');
+  }, [selectedYarnId]);
 
   // Submit main Yarn form
   const handleYarnSubmit = (e: React.FormEvent) => {
@@ -268,13 +277,9 @@ export default function CatalogManagement({
     if (!selectedYarn) return;
 
     const generatedSku = colorForm.sku.trim() || generateSKU(selectedYarn.brand, selectedYarn.name, colorForm.code);
-    const cleanedBags = colorForm.bags
-      .filter((bag) => bag.name.trim())
-      .map((bag) => ({
-        name: bag.name.trim(),
-        quantity: Math.max(0, Number(bag.quantity) || 0),
-      }));
-    const totalStock = cleanedBags.reduce((sum, bag) => sum + bag.quantity, 0);
+    const totalStock = Math.max(0, Number(colorForm.stock) || 0);
+    const bagName = colorForm.bagName.trim();
+    const bags = bagName && totalStock > 0 ? [{ name: bagName, quantity: totalStock }] : [];
 
     let updatedColors = [...selectedYarn.colors];
     if (editingColor) {
@@ -285,11 +290,11 @@ export default function CatalogManagement({
           code: colorForm.code, 
           name: colorForm.name, 
           hex: colorForm.hex, 
-          stock: totalStock, 
+          stock: totalStock,
           minStock: Number(colorForm.minStock), 
-          location: cleanedBags[0]?.name || 'Sin bolsa',
+          location: bagName || 'Sin bolsa',
           sku: generatedSku,
-          bags: cleanedBags
+          bags
         } : c
       );
     } else {
@@ -305,9 +310,9 @@ export default function CatalogManagement({
         hex: colorForm.hex,
         stock: totalStock,
         minStock: Number(colorForm.minStock),
-        location: cleanedBags[0]?.name || 'Sin bolsa',
+        location: bagName || 'Sin bolsa',
         sku: generatedSku,
-        bags: cleanedBags
+        bags
       };
       updatedColors.push(newColor);
     }
@@ -327,21 +332,24 @@ export default function CatalogManagement({
       code: '',
       name: '',
       hex: '#FF6B6B',
+      stock: 0,
+      bagName: '',
       minStock: 5,
       sku: '',
-      bags: [createEmptyBag()]
     });
   };
 
   const startEditColor = (color: ColorStorage) => {
+    const bags = normalizeBags(color);
     setEditingColor(color);
     setColorForm({
       code: color.code,
       name: color.name,
       hex: color.hex,
+      stock: getColorTotalStock(color),
+      bagName: bags[0]?.name || '',
       minStock: color.minStock,
       sku: color.sku,
-      bags: normalizeBags(color).length > 0 ? normalizeBags(color) : [createEmptyBag()]
     });
     setIsColorFormOpen(true);
   };
@@ -355,6 +363,50 @@ export default function CatalogManagement({
         colors: updatedColors
       });
     }
+  };
+
+  const handleQuickAdjustColor = (colorCode: string, delta: number) => {
+    if (!selectedYarn) return;
+
+    const updatedColors = selectedYarn.colors.map((color) => {
+      if (color.code !== colorCode) return color;
+
+      const cleanedBags = normalizeBags(color);
+      if (cleanedBags.length > 0) {
+        const preferredBagName = color.location !== 'Sin bolsa' ? color.location : cleanedBags[0]?.name;
+        const index = Math.max(0, cleanedBags.findIndex((bag) => bag.name === preferredBagName));
+        const currentQty = cleanedBags[index]?.quantity || 0;
+        const nextQty = Math.max(0, currentQty + delta);
+
+        const nextBags = [...cleanedBags];
+        if (nextQty === 0) {
+          nextBags.splice(index, 1);
+        } else {
+          nextBags[index] = { ...nextBags[index], quantity: nextQty };
+        }
+
+        const nextStock = nextBags.reduce((sum, bag) => sum + bag.quantity, 0);
+        return {
+          ...color,
+          bags: nextBags,
+          stock: nextStock,
+          location: nextBags[0]?.name || 'Sin bolsa',
+        };
+      }
+
+      const nextStock = Math.max(0, (Number(color.stock) || 0) + delta);
+      return {
+        ...color,
+        stock: nextStock,
+        bags: [],
+        location: 'Sin bolsa',
+      };
+    });
+
+    onUpdateYarn({
+      ...selectedYarn,
+      colors: updatedColors,
+    });
   };
 
   // Pre-set colors list helpers and direct seeds filler
@@ -761,24 +813,36 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
 
               {/* Color inventory details block */}
               <div className="p-6">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col md:flex-row justify-between md:items-center gap-3 mb-4">
                   <div>
                     <h4 className="font-bold text-sm text-gray-800">Variantes de Color y Stock Físico</h4>
-                    <p className="text-[11px] text-gray-400">Cada color reparte su stock entre una o varias bolsas, con mínimo de advertencia y SKU.</p>
+                    <p className="text-[11px] text-gray-400">Define cuántos ovillos tienes y, si quieres, en qué bolsa principal están. Para repartir en varias bolsas usa “Mis Bolsas”.</p>
                   </div>
                   
-                  <button
-                    id="btn-add-color"
-                    type="button"
-                    onClick={() => {
-                      setEditingColor(null);
-                      resetColorForm();
-                      setIsColorFormOpen(true);
-                    }}
-                    className="flex items-center gap-1.5 py-1.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-xl transition cursor-pointer"
-                  >
-                    <Plus size={14} /> Añadir Color
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <div className="relative w-full md:w-72">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={14} />
+                      <input
+                        type="text"
+                        value={colorSearchTerm}
+                        onChange={(e) => setColorSearchTerm(e.target.value)}
+                        placeholder="Buscar color (código, nombre, bolsa...)"
+                        className="w-full bg-white border border-gray-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 pl-9 pr-3 text-xs text-gray-800 transition"
+                      />
+                    </div>
+                    <button
+                      id="btn-add-color"
+                      type="button"
+                      onClick={() => {
+                        setEditingColor(null);
+                        resetColorForm();
+                        setIsColorFormOpen(true);
+                      }}
+                      className="flex items-center gap-1.5 py-2 px-3 bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold rounded-xl transition cursor-pointer shrink-0"
+                    >
+                      <Plus size={14} /> Añadir Color
+                    </button>
+                  </div>
                 </div>
 
                 {selectedYarn.colors.length === 0 ? (
@@ -789,7 +853,18 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
-                    {selectedYarn.colors.map((c) => {
+                    {selectedYarn.colors
+                      .filter((c) => {
+                        const term = colorSearchTerm.trim().toLowerCase();
+                        if (!term) return true;
+                        return (
+                          c.code.toLowerCase().includes(term) ||
+                          c.name.toLowerCase().includes(term) ||
+                          c.sku.toLowerCase().includes(term) ||
+                          getBagNames(c).some((b) => b.toLowerCase().includes(term))
+                        );
+                      })
+                      .map((c) => {
                       const colorStock = getColorTotalStock(c);
                       const isLow = colorStock < c.minStock;
 
@@ -830,7 +905,7 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                               }`}>
                                 {colorStock} uds.
                               </span>
-                              <span className="block text-[9px] text-gray-400 mt-0.5">{getBagNames(c).length} bolsas</span>
+                              <span className="block text-[9px] text-gray-400 mt-0.5">{getBagNames(c).length > 0 ? `Bolsa: ${getBagNames(c)[0]}` : 'Sin bolsa'}</span>
                               {isLow && (
                                 <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded mt-0.5">
                                   Alto riesgo
@@ -839,6 +914,24 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                             </div>
 
                             <div className="flex flex-col gap-1 border-l pl-2">
+                              <div className="flex flex-col gap-1 pb-1 border-b border-gray-100">
+                                <button
+                                  type="button"
+                                  onClick={() => handleQuickAdjustColor(c.code, 1)}
+                                  className="p-1 hover:bg-emerald-50 text-gray-400 hover:text-emerald-700 rounded transition"
+                                  title="Añadir 1 unidad"
+                                >
+                                  <ChevronUp size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleQuickAdjustColor(c.code, -1)}
+                                  className="p-1 hover:bg-amber-50 text-gray-400 hover:text-amber-700 rounded transition"
+                                  title="Quitar 1 unidad"
+                                >
+                                  <ChevronDown size={14} />
+                                </button>
+                              </div>
                               <button
                                 id={`edit-color-${c.code}`}
                                 type="button"
@@ -1173,71 +1266,41 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-xs font-semibold text-gray-600">Bolsas y cantidades</label>
-                    <button
-                      type="button"
-                      onClick={() => setColorForm({ ...colorForm, bags: [...colorForm.bags, createEmptyBag()] })}
-                      className="text-[11px] font-bold text-amber-700 hover:text-amber-800"
-                    >
-                      + Añadir bolsa
-                    </button>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="color-stock" className="block text-xs font-semibold text-gray-600 mb-1">Unidades (ovillos) *</label>
+                      <input
+                        id="color-stock"
+                        type="number"
+                        min="0"
+                        value={colorForm.stock}
+                        onChange={(e) => setColorForm({ ...colorForm, stock: Math.max(0, Number(e.target.value) || 0) })}
+                        className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-amber-500 focus:outline-none rounded-lg py-2 px-3 text-xs text-gray-800 transition font-mono"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="color-bag" className="block text-xs font-semibold text-gray-600 mb-1">Bolsa (Opcional)</label>
+                      <input
+                        id="color-bag"
+                        type="text"
+                        value={colorForm.bagName}
+                        onChange={(e) => setColorForm({ ...colorForm, bagName: e.target.value })}
+                        placeholder="Ej. Bolsa blanca"
+                        list="bag-name-options"
+                        className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-amber-500 focus:outline-none rounded-lg py-2 px-3 text-xs text-gray-800 transition"
+                      />
+                      <datalist id="bag-name-options">
+                        {availableBagNames.map((bag) => (
+                          <option key={bag} value={bag} />
+                        ))}
+                      </datalist>
+                    </div>
                   </div>
 
-                  <div className="space-y-2">
-                    {colorForm.bags.map((bag, index) => (
-                      <div key={`${bag.name}-${index}`} className="grid grid-cols-[1fr_96px_32px] gap-2 items-center">
-                        <input
-                          type="text"
-                          value={bag.name}
-                          onChange={(e) =>
-                            setColorForm({
-                              ...colorForm,
-                              bags: colorForm.bags.map((currentBag, currentIndex) =>
-                                currentIndex === index ? { ...currentBag, name: e.target.value } : currentBag
-                              ),
-                            })
-                          }
-                          placeholder="Ej. Bolsa blanca"
-                          className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-amber-500 focus:outline-none rounded-lg py-2 px-3 text-xs text-gray-800 transition"
-                        />
-                        <input
-                          type="number"
-                          min="0"
-                          value={bag.quantity}
-                          onChange={(e) =>
-                            setColorForm({
-                              ...colorForm,
-                              bags: colorForm.bags.map((currentBag, currentIndex) =>
-                                currentIndex === index ? { ...currentBag, quantity: Math.max(0, Number(e.target.value) || 0) } : currentBag
-                              ),
-                            })
-                          }
-                          className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-amber-500 focus:outline-none rounded-lg py-2 px-3 text-xs text-gray-800 transition font-mono"
-                        />
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setColorForm({
-                              ...colorForm,
-                              bags: colorForm.bags.length > 1
-                                ? colorForm.bags.filter((_, currentIndex) => currentIndex !== index)
-                                : [createEmptyBag()],
-                            })
-                          }
-                          className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-gray-600 flex items-center justify-between">
-                    <span>Total calculado automáticamente</span>
-                    <span className="font-mono font-bold text-gray-800">
-                      {colorForm.bags.reduce((sum, bag) => sum + Math.max(0, Number(bag.quantity) || 0), 0)} uds.
-                    </span>
+                  <div className="rounded-xl bg-slate-50 border border-slate-100 px-3 py-2 text-[11px] text-gray-600">
+                    Si indicas una bolsa, se guardará todo el stock del color en esa bolsa. Si más adelante quieres repartirlo en varias bolsas, hazlo desde “Mis Bolsas”.
                   </div>
                 </div>
 
