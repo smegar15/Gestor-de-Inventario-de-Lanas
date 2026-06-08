@@ -13,10 +13,11 @@ import {
   Menu,
   X,
   ShoppingBag,
-  Settings
+  Settings,
+  PieChart
 } from 'lucide-react';
 
-import { Bag, Project, Yarn, Movement } from './types';
+import { Bag, Project, Yarn, Movement, StartedSkein } from './types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from './data/catalogSeeds';
 import { normalizeYarn, clearYarnStock } from './utils/inventory';
 import { getSupabase, syncYarnsToSupabase, loadYarnsFromSupabase, testSupabaseConnection } from './utils/supabase';
@@ -27,6 +28,7 @@ import CatalogManagement from './components/CatalogManagement';
 import BagManagement from './components/BagManagement';
 import ProjectsManagement from './components/ProjectsManagement';
 import BackupManager from './components/BackupManager';
+import StartedSkeinsManagement from './components/StartedSkeinsManagement';
 
 export default function App() {
   // Database States
@@ -34,6 +36,7 @@ export default function App() {
   const [movements, setMovements] = useState<Movement[]>([]);
   const [bags, setBags] = useState<Bag[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [startedSkeins, setStartedSkeins] = useState<StartedSkein[]>([]);
   const [geminiKey, setGeminiKey] = useState<string>('');
   const [supabaseUrl, setSupabaseUrl] = useState<string>('');
   const [supabaseKey, setSupabaseKey] = useState<string>('');
@@ -42,7 +45,7 @@ export default function App() {
   const [lastCloudLoad, setLastCloudLoad] = useState<{ count: number; at: string } | null>(null);
   
   // App navigation, UI states
-  const [activeTab, setActiveTab] = useState<'inventory' | 'catalog' | 'bags' | 'projects' | 'backup'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'catalog' | 'bags' | 'projects' | 'started' | 'backup'>('inventory');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Initialize DB from localStorage or seeds
@@ -134,72 +137,47 @@ export default function App() {
       if (storedSupaUrl) setSupabaseUrl(storedSupaUrl);
       if (storedSupaKey) setSupabaseKey(storedSupaKey);
 
-      const storedYarns = localStorage.getItem('tejestock_yarns_v1');
-      const localYarns: Yarn[] | null = storedYarns ? JSON.parse(storedYarns).map(normalizeYarn) : null;
-
-      const storedBags = localStorage.getItem('tejestock_bags_v1');
-      const localBags: Bag[] =
-        storedBags && storedBags.trim() ? (JSON.parse(storedBags) as Bag[]) : [];
-
-      const storedProjects = localStorage.getItem('tejestock_projects_v1');
-      const localProjects: Project[] =
-        storedProjects && storedProjects.trim() ? (JSON.parse(storedProjects) as Project[]) : [];
-
-      setMovements([]);
-      localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
-
       const supaClient = getSupabase(storedSupaUrl || undefined, storedSupaKey || undefined);
       if (supaClient) {
         setSyncStatus('syncing');
         const test = await testSupabaseConnection();
         if (test.ok) {
           const remote = await loadYarnsFromSupabase();
-          const remoteYarns: Yarn[] | null =
+          const remoteYarns: Yarn[] =
             Array.isArray(remote) ? remote :
-            (remote && Array.isArray((remote as any).yarns) ? (remote as any).yarns : null);
-          const remoteBags: Bag[] | null =
-            remote && Array.isArray((remote as any).bags) ? (remote as any).bags : null;
-          const remoteProjects: Project[] | null =
-            remote && Array.isArray((remote as any).projects) ? (remote as any).projects : null;
+            (remote && Array.isArray((remote as any).yarns) ? (remote as any).yarns : []);
+          const remoteBags: Bag[] =
+            remote && Array.isArray((remote as any).bags) ? (remote as any).bags : [];
+          const remoteProjects: Project[] =
+            remote && Array.isArray((remote as any).projects) ? (remote as any).projects : [];
+          const remoteStarted: StartedSkein[] =
+            remote && Array.isArray((remote as any).startedSkeins) ? (remote as any).startedSkeins : [];
+          const remoteMovements: Movement[] =
+            remote && Array.isArray((remote as any).movements) ? (remote as any).movements : [];
 
-          if (remoteYarns && remoteYarns.length > 0) {
+          if (remoteYarns.length > 0) {
             const normalizedRemote = remoteYarns.map(normalizeYarn);
             setYarns(normalizedRemote);
-            localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalizedRemote));
-            const nextBags = mergeBagsWithYarns(remoteBags || localBags, normalizedRemote);
+            const nextBags = mergeBagsWithYarns(remoteBags, normalizedRemote);
             setBags(nextBags);
-            localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-            const nextProjects = mergeProjects(remoteProjects || [], localProjects);
+            const nextProjects = mergeProjects(remoteProjects, []);
             setProjects(nextProjects);
-            localStorage.setItem('tejestock_projects_v1', JSON.stringify(nextProjects));
+            setStartedSkeins(remoteStarted);
+            setMovements(remoteMovements);
             setSyncStatus('synced');
             setLastCloudLoad({ count: normalizedRemote.length, at: new Date().toISOString() });
             return;
           }
 
-          if (localYarns) {
-            const normalizedLocal = localYarns.map(normalizeYarn);
-            const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
-            const success = await syncYarnsToSupabase(normalizedLocal, nextBags, localProjects);
-            setSyncStatus(success ? 'synced' : 'offline');
-            setYarns(normalizedLocal);
-            setBags(nextBags);
-            localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-            setProjects(localProjects);
-            localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
-            return;
-          }
-
           const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
-          const nextBags = mergeBagsWithYarns(localBags, initialYarns);
-          const success = await syncYarnsToSupabase(initialYarns, nextBags, localProjects);
+          const nextBags = mergeBagsWithYarns([], initialYarns);
+          const success = await syncYarnsToSupabase(initialYarns, nextBags, [], [], []);
           setSyncStatus(success ? 'synced' : 'offline');
           setYarns(initialYarns);
           setBags(nextBags);
-          setProjects(localProjects);
-          localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
-          localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-          localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
+          setProjects([]);
+          setStartedSkeins([]);
+          setMovements([]);
           if (success) setLastCloudLoad({ count: initialYarns.length, at: new Date().toISOString() });
           return;
         } else {
@@ -207,31 +185,19 @@ export default function App() {
         }
       }
 
-      if (localYarns) {
-        const normalizedLocal = localYarns.map(normalizeYarn);
-        setYarns(normalizedLocal);
-        const nextBags = mergeBagsWithYarns(localBags, normalizedLocal);
-        setBags(nextBags);
-        localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-        setProjects(localProjects);
-        localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
-        return;
-      }
-
       const initialYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
       setYarns(initialYarns);
-      localStorage.setItem('tejestock_yarns_v1', JSON.stringify(initialYarns));
-      const nextBags = mergeBagsWithYarns(localBags, initialYarns);
+      const nextBags = mergeBagsWithYarns([], initialYarns);
       setBags(nextBags);
-      localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-      setProjects(localProjects);
-      localStorage.setItem('tejestock_projects_v1', JSON.stringify(localProjects));
+      setProjects([]);
+      setStartedSkeins([]);
+      setMovements([]);
     };
 
     init();
   }, []);
 
-  // Save changes to localStorage whenever states change
+  // Save changes to Supabase whenever states change
   const saveYarns = async (updatedYarns: Yarn[]) => {
     const normalizeBagName = (name: unknown): string => (typeof name === 'string' ? name.trim() : '');
     const extractBagNamesFromYarns = (inputYarns: Yarn[]): string[] => {
@@ -268,28 +234,88 @@ export default function App() {
       return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
     };
 
-    const normalized = updatedYarns.map(normalizeYarn);
+    const dataUrlToBlob = (dataUrl: string): Blob | null => {
+      try {
+        const [meta, b64] = dataUrl.split(',');
+        if (!meta || !b64) return null;
+        const mime = meta.split(';')[0].split(':')[1] || 'application/octet-stream';
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+      } catch {
+        return null;
+      }
+    };
+
+    const sanitizeFileName = (name: string): string =>
+      name
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '')
+        .slice(0, 80) || 'image.jpg';
+
+    const ensureYarnImagesInSupabase = async (input: Yarn[]): Promise<Yarn[]> => {
+      if (!supabaseUrl || !supabaseKey) return input;
+      const client = getSupabase();
+      if (!client) return input;
+
+      const bucket = 'tejestock-yarns';
+      const next: Yarn[] = [];
+
+      for (const yarn of input) {
+        const img = yarn.image || '';
+        const hasDataUrl = typeof img === 'string' && img.startsWith('data:image/');
+        const needsUpload = hasDataUrl && !yarn.imagePath;
+
+        if (!needsUpload) {
+          next.push(yarn);
+          continue;
+        }
+
+        const blob = dataUrlToBlob(img);
+        if (!blob) {
+          next.push(yarn);
+          continue;
+        }
+
+        const fileName = sanitizeFileName(`${yarn.brand}-${yarn.name}.jpg`);
+        const ext = fileName.includes('.') ? fileName.split('.').pop() || 'jpg' : 'jpg';
+        const path = `${yarn.id}/${Date.now()}.${ext}`;
+        const { error } = await client.storage.from(bucket).upload(path, blob, { upsert: true, contentType: blob.type });
+        if (error) {
+          console.error('Error uploading yarn image to Supabase Storage:', error);
+          next.push(yarn);
+          continue;
+        }
+
+        const publicUrl = client.storage.from(bucket).getPublicUrl(path)?.data?.publicUrl || '';
+        next.push({ ...yarn, imagePath: path, image: publicUrl || yarn.image });
+      }
+
+      return next;
+    };
+
+    const preparedYarns = await ensureYarnImagesInSupabase(updatedYarns);
+    const normalized = preparedYarns.map(normalizeYarn);
     setYarns(normalized);
-    localStorage.setItem('tejestock_yarns_v1', JSON.stringify(normalized));
 
     const nextBags = mergeBagsWithYarns(bags, normalized);
     setBags(nextBags);
-    localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
     
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(normalized, nextBags, projects);
+      const success = await syncYarnsToSupabase(normalized, nextBags, projects, startedSkeins, movements);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
 
   const saveBags = async (updatedBags: Bag[]) => {
     setBags(updatedBags);
-    localStorage.setItem('tejestock_bags_v1', JSON.stringify(updatedBags));
 
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(yarns, updatedBags, projects);
+      const success = await syncYarnsToSupabase(yarns, updatedBags, projects, startedSkeins, movements);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
@@ -364,19 +390,20 @@ export default function App() {
 
     const preparedProjects = await ensureImagesInSupabase(updatedProjects);
     setProjects(preparedProjects);
-    try {
-      localStorage.setItem('tejestock_projects_v1', JSON.stringify(preparedProjects));
-    } catch (e: any) {
-      console.error('Error saving projects to localStorage:', e);
-      alert(
-        'No se pudieron guardar los proyectos en este navegador (posible falta de espacio).\n\n' +
-        'Si tienes Supabase configurado, asegúrate de tener un bucket público llamado "tejestock-projects".'
-      );
-    }
 
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(yarns, bags, preparedProjects);
+      const success = await syncYarnsToSupabase(yarns, bags, preparedProjects, startedSkeins, movements);
+      setSyncStatus(success ? 'synced' : 'offline');
+    }
+  };
+
+  const saveStartedSkeins = async (updated: StartedSkein[]) => {
+    setStartedSkeins(updated);
+
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      const success = await syncYarnsToSupabase(yarns, bags, projects, updated, movements);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };
@@ -424,7 +451,7 @@ export default function App() {
           `- URL o Anon Key incorrectas.`
         );
       } else {
-        const success = await syncYarnsToSupabase(yarns, bags, projects);
+        const success = await syncYarnsToSupabase(yarns, bags, projects, startedSkeins, movements);
         setSyncStatus(success ? 'synced' : 'offline');
       }
     } else {
@@ -451,7 +478,12 @@ export default function App() {
 
   const saveMovements = (updatedMovements: Movement[]) => {
     setMovements(updatedMovements);
-    localStorage.setItem('tejestock_moves_v1', JSON.stringify(updatedMovements));
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      syncYarnsToSupabase(yarns, bags, projects, startedSkeins, updatedMovements).then((success) => {
+        setSyncStatus(success ? 'synced' : 'offline');
+      });
+    }
   };
 
   // Catalog update flow handlers
@@ -511,21 +543,19 @@ export default function App() {
 
   // Backup operations restore/reset
   const handleResetToDemo = () => {
-    localStorage.removeItem('tejestock_yarns_v1');
-    localStorage.removeItem('tejestock_moves_v1');
-    localStorage.removeItem('tejestock_bags_v1');
-    localStorage.removeItem('tejestock_projects_v1');
-
     const resetYarns = [KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED].map(normalizeYarn).map(clearYarnStock);
     setYarns(resetYarns);
     setMovements([]);
     setBags([]);
     setProjects([]);
+    setStartedSkeins([]);
 
-    localStorage.setItem('tejestock_yarns_v1', JSON.stringify(resetYarns));
-    localStorage.setItem('tejestock_moves_v1', JSON.stringify([]));
-    localStorage.setItem('tejestock_bags_v1', JSON.stringify([]));
-    localStorage.setItem('tejestock_projects_v1', JSON.stringify([]));
+    if (supabaseUrl && supabaseKey) {
+      setSyncStatus('syncing');
+      syncYarnsToSupabase(resetYarns, [], [], [], []).then((success) => {
+        setSyncStatus(success ? 'synced' : 'offline');
+      });
+    }
   };
 
   const handleRestoreBackup = (backup: any) => {
@@ -587,6 +617,19 @@ export default function App() {
             >
               <BarChart3 size={16} />
               <span>Mi Inventario</span>
+            </button>
+
+            <button
+              id="nav-tab-started"
+              onClick={() => { setActiveTab('started'); setIsMobileMenuOpen(false); }}
+              className={`w-full flex items-center gap-3 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer text-left ${
+                activeTab === 'started'
+                  ? 'bg-orange-600 text-white shadow-md'
+                  : 'hover:bg-slate-850 hover:text-white'
+              }`}
+            >
+              <PieChart size={16} />
+              <span>Ovillos empezados</span>
             </button>
 
             <button
@@ -700,6 +743,14 @@ export default function App() {
                 projects={projects}
                 geminiKey={geminiKey}
                 onUpdateProjects={saveProjects}
+              />
+            )}
+
+            {activeTab === 'started' && (
+              <StartedSkeinsManagement
+                yarns={yarns}
+                startedSkeins={startedSkeins}
+                onUpdateStartedSkeins={saveStartedSkeins}
               />
             )}
 

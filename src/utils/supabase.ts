@@ -42,13 +42,19 @@ export function getSupabase(url?: string, key?: string) {
   return null;
 }
 
-export async function syncYarnsToSupabase(yarns: any[], bags?: any[], projects?: any[]) {
+export async function syncYarnsToSupabase(yarns: any[], bags?: any[], projects?: any[], startedSkeins?: any[], movements?: any[]) {
   const client = getSupabase();
   if (!client) return false;
 
   const data =
-    Array.isArray(bags) || Array.isArray(projects)
-      ? { yarns, bags: Array.isArray(bags) ? bags : [], projects: Array.isArray(projects) ? projects : [] }
+    Array.isArray(bags) || Array.isArray(projects) || Array.isArray(startedSkeins) || Array.isArray(movements)
+      ? {
+          yarns,
+          bags: Array.isArray(bags) ? bags : [],
+          projects: Array.isArray(projects) ? projects : [],
+          startedSkeins: Array.isArray(startedSkeins) ? startedSkeins : [],
+          movements: Array.isArray(movements) ? movements : [],
+        }
       : yarns;
   const { error } = await client
     .from('inventory')

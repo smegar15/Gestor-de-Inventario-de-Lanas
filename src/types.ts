@@ -25,6 +25,11 @@ export interface Bag {
   createdAt: string;
 }
 
+export interface PurchaseLink {
+  name: string;
+  url: string;
+}
+
 export interface ProjectPaletteColor {
   hex: string;
   name: string;
@@ -87,6 +92,8 @@ export interface Yarn {
   price: number;
   supplier: string;
   image?: string;
+  imagePath?: string;
+  purchaseLinks?: PurchaseLink[];
   catalogPdf?: {
     name: string;
     data: string; // base64
@@ -112,6 +119,22 @@ export interface Movement {
   date: string;
   user: string;
   notes?: string;
+}
+
+export type RemainingPercent = 100 | 75 | 50 | 25;
+
+export interface StartedSkein {
+  id: string;
+  yarnId: string;
+  yarnName: string;
+  yarnBrand: string;
+  colorCode: string;
+  colorName: string;
+  colorHex: string;
+  sku: string;
+  remainingPercent: RemainingPercent;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface UserSession {

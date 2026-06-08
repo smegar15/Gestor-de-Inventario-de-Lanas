@@ -21,8 +21,10 @@ import {
   FileUp,
   FileText,
   Check,
+  Globe,
+  ExternalLink,
 } from 'lucide-react';
-import { Yarn, ColorStorage } from '../types';
+import { Yarn, ColorStorage, PurchaseLink } from '../types';
 import { KATIA_PLANET_SEED, KATIA_CRAFT_LOVER_SEED } from '../data/catalogSeeds';
 import { getBagNames, getColorTotalStock, normalizeBags } from '../utils/inventory';
 import { processCatalogWithAI } from '../utils/aiProcessor';
@@ -62,6 +64,8 @@ export default function CatalogManagement({
     price: number;
     supplier: string;
     notes: string;
+    image?: string;
+    purchaseLinks: PurchaseLink[];
     catalogPdf?: { name: string; data: string };
   }>({
     name: '',
@@ -72,6 +76,8 @@ export default function CatalogManagement({
     price: 3.50,
     supplier: 'Katia S.A.',
     notes: '',
+    image: undefined,
+    purchaseLinks: [],
     catalogPdf: undefined
   });
 
@@ -134,6 +140,17 @@ export default function CatalogManagement({
   });
 
   const selectedYarn = yarns.find((y) => y.id === selectedYarnId);
+  const normalizePurchaseLinks = (links: PurchaseLink[] | undefined): PurchaseLink[] => {
+    return (links || [])
+      .map((link) => {
+        const name = (link.name || '').trim();
+        const rawUrl = (link.url || '').trim();
+        const url = rawUrl && !/^https?:\/\//i.test(rawUrl) ? `https://${rawUrl}` : rawUrl;
+        return { name, url };
+      })
+      .filter((link) => link.name || link.url);
+  };
+
   useEffect(() => {
     setColorSearchTerm('');
   }, [selectedYarnId]);
@@ -149,6 +166,8 @@ export default function CatalogManagement({
         price: Number(yarnForm.price),
         weightGrams: Number(yarnForm.weightGrams),
         lengthMeters: Number(yarnForm.lengthMeters),
+        image: yarnForm.image,
+        purchaseLinks: normalizePurchaseLinks(yarnForm.purchaseLinks),
         catalogPdf: yarnForm.catalogPdf
       };
       onUpdateYarn(updated);
@@ -164,6 +183,8 @@ export default function CatalogManagement({
         price: Number(yarnForm.price),
         supplier: yarnForm.supplier,
         notes: yarnForm.notes,
+        image: yarnForm.image,
+        purchaseLinks: normalizePurchaseLinks(yarnForm.purchaseLinks),
         catalogPdf: yarnForm.catalogPdf,
         createdAt: new Date().toISOString(),
         colors: pendingColors
@@ -186,6 +207,8 @@ export default function CatalogManagement({
       price: 3.50,
       supplier: 'Katia S.A.',
       notes: '',
+      image: undefined,
+      purchaseLinks: [],
       catalogPdf: undefined
     });
     setPendingColors([]);
@@ -217,7 +240,8 @@ export default function CatalogManagement({
       try {
         const aiData = await processCatalogWithAI(geminiKey, base64Data, file.name);
         
-        setYarnForm({
+        setYarnForm((prev) => ({
+          ...prev,
           name: aiData.name || '',
           brand: aiData.brand || '',
           composition: aiData.composition || '',
@@ -230,7 +254,7 @@ export default function CatalogManagement({
             name: file.name,
             data: base64Data
           }
-        });
+        }));
         
         if (!editingYarn && aiData.colors) {
           const colorsWithBags = aiData.colors.map((c: any) => ({
@@ -254,6 +278,64 @@ export default function CatalogManagement({
     reader.readAsDataURL(file);
   };
 
+  const compressImageDataUrl = async (dataUrl: string): Promise<string> => {
+    try {
+      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return dataUrl;
+
+      const img = new Image();
+      const loaded = new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('image-load-failed'));
+      });
+      img.src = dataUrl;
+      await loaded;
+
+      const maxSide = 160;
+      const maxOriginal = Math.max(img.width || 0, img.height || 0);
+      if (!Number.isFinite(maxOriginal) || maxOriginal <= 0) return dataUrl;
+
+      const scale = Math.min(1, maxSide / maxOriginal);
+      const w = Math.max(1, Math.round((img.width || 1) * scale));
+      const h = Math.max(1, Math.round((img.height || 1) * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return dataUrl;
+
+      ctx.drawImage(img, 0, 0, w, h);
+      const next = canvas.toDataURL('image/jpeg', 0.78);
+      if (typeof next === 'string' && next.length > 0 && next.length < dataUrl.length) return next;
+      return dataUrl;
+    } catch {
+      return dataUrl;
+    }
+  };
+
+  const handleYarnImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Por favor, selecciona un archivo de imagen.');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('La imagen es demasiado grande (máx 2MB).');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      const compressed = await compressImageDataUrl(dataUrl);
+      setYarnForm((prev) => ({ ...prev, image: compressed }));
+    };
+    reader.readAsDataURL(file);
+  };
+
   const startEditYarn = (yarn: Yarn, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingYarn(yarn);
@@ -266,9 +348,34 @@ export default function CatalogManagement({
       price: yarn.price,
       supplier: yarn.supplier,
       notes: yarn.notes || '',
+      image: yarn.image,
+      purchaseLinks: normalizePurchaseLinks(yarn.purchaseLinks),
       catalogPdf: yarn.catalogPdf
     });
     setIsYarnModalOpen(true);
+  };
+
+  const handlePurchaseLinkChange = (index: number, field: 'name' | 'url', value: string) => {
+    setYarnForm((prev) => ({
+      ...prev,
+      purchaseLinks: prev.purchaseLinks.map((link, idx) =>
+        idx === index ? { ...link, [field]: value } : link
+      ),
+    }));
+  };
+
+  const handleAddPurchaseLink = () => {
+    setYarnForm((prev) => ({
+      ...prev,
+      purchaseLinks: [...prev.purchaseLinks, { name: '', url: '' }],
+    }));
+  };
+
+  const handleRemovePurchaseLink = (index: number) => {
+    setYarnForm((prev) => ({
+      ...prev,
+      purchaseLinks: prev.purchaseLinks.filter((_, idx) => idx !== index),
+    }));
   };
 
   // Submit Color form inside selected yarn
@@ -685,14 +792,29 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                     }`}
                   >
                     <div className="flex justify-between items-start">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <h4 className="font-bold text-sm text-gray-800">{y.name}</h4>
-                          <span className="bg-gray-100 text-gray-600 text-[9px] px-1.5 py-0.2 font-semibold rounded">
-                            {y.brand}
-                          </span>
+                      <div className="flex items-start gap-3 min-w-0">
+                        {y.image ? (
+                          <img
+                            src={y.image}
+                            alt={`Ovillo ${y.brand} ${y.name}`}
+                            className="w-[51px] h-[51px] rounded-full object-cover border border-gray-200 shadow-sm shrink-0 bg-slate-50"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-[51px] h-[51px] rounded-full border border-gray-200 shadow-inner shrink-0 bg-slate-50 flex items-center justify-center text-sm">
+                            🧶
+                          </div>
+                        )}
+
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <h4 className="font-bold text-sm text-gray-800 truncate">{y.name}</h4>
+                            <span className="bg-gray-100 text-gray-600 text-[9px] px-1.5 py-0.2 font-semibold rounded shrink-0">
+                              {y.brand}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-400 mt-1 truncate">{y.composition}</p>
                         </div>
-                        <p className="text-[11px] text-gray-400 mt-1">{y.composition}</p>
                       </div>
 
                       <div className="flex gap-1.5">
@@ -795,7 +917,7 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                   </p>
                 )}
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 text-xs">
                   <div className="bg-white p-2.5 rounded-xl border">
                     <span className="text-gray-400 block text-[9px] uppercase tracking-wider">Proveedor</span>
                     <span className="font-semibold text-gray-700 mt-0.5 block truncate">{selectedYarn.supplier}</span>
@@ -808,7 +930,37 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                     <span className="text-gray-400 block text-[9px] uppercase tracking-wider">Variaciones registradas</span>
                     <span className="font-semibold text-gray-700 mt-0.5 block">{selectedYarn.colors.length} colores</span>
                   </div>
+                  <div className="bg-white p-2.5 rounded-xl border col-span-2 sm:col-span-1">
+                    <span className="text-gray-400 block text-[9px] uppercase tracking-wider">Tiendas / Webs</span>
+                    <span className="font-semibold text-gray-700 mt-0.5 block">
+                      {normalizePurchaseLinks(selectedYarn.purchaseLinks).length}
+                    </span>
+                  </div>
                 </div>
+
+                {normalizePurchaseLinks(selectedYarn.purchaseLinks).length > 0 && (
+                  <div className="mt-4 bg-white p-3 rounded-2xl border border-slate-100">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Globe size={14} className="text-blue-600" />
+                      <h4 className="text-xs font-bold text-gray-800">Dónde comprar esta línea</h4>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {normalizePurchaseLinks(selectedYarn.purchaseLinks).map((link, index) => (
+                        <a
+                          key={`${link.url}-${index}`}
+                          href={link.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 py-1.5 px-3 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-bold rounded-full transition"
+                          title={link.url}
+                        >
+                          <ExternalLink size={12} />
+                          {link.name || link.url}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Color inventory details block */}
@@ -844,6 +996,58 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                     </button>
                   </div>
                 </div>
+
+                {selectedYarn.colors.length > 0 && (
+                  (() => {
+                    const outOfStockColors = selectedYarn.colors
+                      .filter((c) => getColorTotalStock(c) === 0)
+                      .sort((a, b) => a.code.localeCompare(b.code, 'es-ES', { numeric: true }));
+
+                    if (outOfStockColors.length === 0) return null;
+
+                    return (
+                      <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50/40 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h5 className="text-[10px] uppercase font-extrabold tracking-widest text-rose-700">
+                              Colores sin ovillos
+                            </h5>
+                            <p className="text-[11px] text-rose-700/80 mt-1">
+                              {outOfStockColors.length} {outOfStockColors.length === 1 ? 'color' : 'colores'} con stock 0
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setColorSearchTerm('')}
+                            className="inline-flex items-center gap-1.5 py-1.5 px-2.5 bg-white hover:bg-rose-50 text-rose-800 text-[11px] font-bold rounded-xl border border-rose-200 transition shrink-0"
+                            title="Quitar filtros"
+                          >
+                            <X size={12} /> Limpiar
+                          </button>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {outOfStockColors.map((c) => (
+                            <button
+                              key={c.code}
+                              type="button"
+                              onClick={() => setColorSearchTerm(c.code)}
+                              className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-full bg-white border border-rose-200 hover:bg-rose-50 transition text-[11px] font-semibold text-rose-800 max-w-full"
+                              title="Buscar este color"
+                            >
+                              <span
+                                className="w-4 h-4 rounded-full border border-gray-200 shadow-inner shrink-0"
+                                style={{ backgroundColor: c.hex }}
+                              />
+                              <span className="font-mono shrink-0">{c.code}</span>
+                              <span className="truncate">{c.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()
+                )}
 
                 {selectedYarn.colors.length === 0 ? (
                   <div className="text-center py-12 text-gray-400 bg-slate-50/50 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center space-y-2">
@@ -1085,6 +1289,57 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                 </div>
 
                 <div>
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <label className="block text-xs font-semibold text-gray-600">Tiendas / Webs donde comprar</label>
+                    <button
+                      type="button"
+                      onClick={handleAddPurchaseLink}
+                      className="inline-flex items-center gap-1 py-1.5 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-bold rounded-xl transition"
+                    >
+                      <Plus size={12} /> Añadir web
+                    </button>
+                  </div>
+
+                  {yarnForm.purchaseLinks.length === 0 ? (
+                    <div className="text-[11px] text-gray-400 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2">
+                      Añade tiendas online o webs donde puedas comprar esta línea de lana.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {yarnForm.purchaseLinks.map((link, index) => (
+                        <div key={`purchase-link-${index}`} className="grid grid-cols-1 sm:grid-cols-[1fr_1.5fr_auto] gap-2 items-center">
+                          <input
+                            type="text"
+                            value={link.name}
+                            onChange={(e) => handlePurchaseLinkChange(index, 'name', e.target.value)}
+                            placeholder="Nombre tienda"
+                            className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-xs text-gray-800 transition"
+                          />
+                          <input
+                            type="text"
+                            value={link.url}
+                            onChange={(e) => handlePurchaseLinkChange(index, 'url', e.target.value)}
+                            placeholder="https://..."
+                            className="w-full bg-slate-50 border border-slate-100 focus:bg-white focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-xs text-gray-800 transition"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePurchaseLink(index)}
+                            className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition justify-self-start sm:justify-self-center"
+                            title="Eliminar web"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[9px] text-gray-400 mt-1">
+                    Puedes poner el nombre de la tienda y su enlace. Si escribes solo `dominio.com`, se guardará como `https://dominio.com`.
+                  </p>
+                </div>
+
+                <div>
                   <label className="block text-xs font-semibold text-gray-600 mb-1">Catálogo PDF (Opcional)</label>
                   <div className="flex items-center gap-2">
                     <label className={`flex-1 flex items-center justify-center gap-2 bg-slate-50 border border-dashed border-slate-300 hover:border-orange-500 hover:bg-orange-50 cursor-pointer rounded-xl py-2 px-3 text-xs font-medium text-slate-600 transition group ${isProcessingAI ? 'animate-pulse' : ''}`}>
@@ -1128,6 +1383,43 @@ Merino Classic,Katia,52% Merino - 48% Acrílico,100,240,4.80,Proveedor Katia,50,
                   <p className="text-[9px] text-gray-400 mt-1">
                     Límite recomendado: 2MB. La IA detectará automáticamente marca, datos técnicos y colores.
                   </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">Imagen del Ovillo (Opcional)</label>
+                  <div className="flex items-center gap-2">
+                    <label className="flex-1 flex items-center justify-center gap-2 bg-slate-50 border border-dashed border-slate-300 hover:border-orange-500 hover:bg-orange-50 cursor-pointer rounded-xl py-2 px-3 text-xs font-medium text-slate-600 transition group">
+                      <Upload size={14} className="text-slate-400 group-hover:text-orange-500" />
+                      <span className="truncate">{yarnForm.image ? 'Cambiar imagen' : 'Subir imagen'}</span>
+                      <input
+                        id="form-yarn-image"
+                        type="file"
+                        accept="image/*"
+                        onChange={handleYarnImageUpload}
+                        className="hidden"
+                      />
+                    </label>
+                    {yarnForm.image && (
+                      <>
+                        <img
+                          src={yarnForm.image}
+                          alt="Vista previa ovillo"
+                          className="w-10 h-10 rounded-full object-cover border border-gray-200 bg-slate-50 shrink-0"
+                          loading="lazy"
+                        />
+                        <button
+                          id="btn-remove-yarn-image"
+                          type="button"
+                          onClick={() => setYarnForm((prev) => ({ ...prev, image: undefined }))}
+                          className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition"
+                          title="Eliminar imagen"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-[9px] text-gray-400 mt-1">Límite recomendado: 2MB.</p>
                 </div>
 
                 <div>
