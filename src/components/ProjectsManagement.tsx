@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Folder, Plus, Trash2, Upload, Sparkles, X, Check, AlertTriangle } from 'lucide-react';
-import { Project, ProjectPaletteColor, ProjectSelection, Yarn } from '../types';
+import { Folder, Plus, Trash2, Upload, Sparkles, X, Check, AlertTriangle, Save } from 'lucide-react';
+import { Project, ProjectCostItem, ProjectDimensions, ProjectPaletteColor, ProjectSelection, ProjectSizeUnit, Yarn } from '../types';
 import { getColorTotalStock } from '../utils/inventory';
-import { extractDesignPaletteWithAI } from '../utils/aiProcessor';
+import { estimateYarnUsageWithAI, extractDesignPaletteWithAI } from '../utils/aiProcessor';
 
 interface ProjectsManagementProps {
   yarns: Yarn[];
@@ -55,6 +55,58 @@ const loadImage = (dataUrl: string) =>
     img.onerror = () => reject(new Error('No se pudo cargar la imagen.'));
     img.src = dataUrl;
   });
+
+const compressImageDataUrl = async (dataUrl: string): Promise<string> => {
+  const img = await loadImage(dataUrl);
+  const width = img.naturalWidth || img.width;
+  const height = img.naturalHeight || img.height;
+  if (!width || !height) return dataUrl;
+
+  let maxSide = 1200;
+  let quality = 0.78;
+
+  for (let i = 0; i < 4; i++) {
+    const scale = Math.min(1, maxSide / Math.max(width, height));
+    const outW = Math.max(1, Math.round(width * scale));
+    const outH = Math.max(1, Math.round(height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0, outW, outH);
+
+    const out = canvas.toDataURL('image/jpeg', quality);
+    const bytes = out.length;
+    if (bytes <= 1_600_000) return out;
+
+    if (i === 0) {
+      quality = 0.65;
+    } else if (i === 1) {
+      maxSide = 900;
+      quality = 0.62;
+    } else if (i === 2) {
+      maxSide = 720;
+      quality = 0.58;
+    }
+  }
+
+  return dataUrl;
+};
+
+const fetchImageAsDataUrl = async (url: string): Promise<string> => {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('No se pudo descargar la imagen guardada.');
+  const blob = await res.blob();
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen guardada.'));
+    reader.readAsDataURL(blob);
+  });
+  return dataUrl;
+};
 
 const createFocusedThumbnail = async (
   dataUrl: string,
@@ -161,10 +213,17 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
   const [editingName, setEditingName] = useState(false);
   const [editNameValue, setEditNameValue] = useState('');
   const [notesDraft, setNotesDraft] = useState('');
+  const [newCostName, setNewCostName] = useState('');
+  const [newCostCategory, setNewCostCategory] = useState('Material');
+  const [newCostQty, setNewCostQty] = useState<number>(1);
+  const [newCostUnitCost, setNewCostUnitCost] = useState<number>(0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === selectedProjectId) || null, [projects, selectedProjectId]);
+
+  const costItems = selectedProject?.costItems || [];
+  const dimensions: ProjectDimensions = selectedProject?.dimensions || { width: 0, height: 0, unit: 'cm', technique: 'Tejido' };
 
   const catalogColorOptions = useMemo(() => {
     return yarns.flatMap((yarn) =>
@@ -236,6 +295,8 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
       id: `proj-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       name,
       selections: [],
+      costItems: [],
+      dimensions: { width: 0, height: 0, unit: 'cm', technique: 'Tejido' },
       createdAt: now,
       updatedAt: now,
       notes: '',
@@ -252,7 +313,17 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
 
   const updateProject = (patch: Partial<Project>) => {
     if (!selectedProject) return;
-    const updated = projects.map((p) => (p.id === selectedProject.id ? { ...p, ...patch, updatedAt: new Date().toISOString() } : p));
+    const updated = projects.map((p) =>
+      p.id === selectedProject.id
+        ? {
+            costItems: p.costItems || [],
+            dimensions: p.dimensions || { width: 0, height: 0, unit: 'cm', technique: 'Tejido' },
+            ...p,
+            ...patch,
+            updatedAt: new Date().toISOString(),
+          }
+        : p
+    );
     onUpdateProjects(updated);
   };
 
@@ -265,6 +336,11 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
     setFeedback('');
     setEditingName(false);
     setNotesDraft('');
+  };
+
+  const handleSaveProjects = () => {
+    onUpdateProjects([...projects]);
+    setFeedback('Proyecto guardado.');
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -280,16 +356,27 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result as string;
-      updateProject({
-        image: { name: file.name, data: base64 },
-        palette: undefined,
-        previews: {},
-        selections: [],
-      });
-      setFeedback('Imagen cargada. Pulsa “Analizar con IA” para obtener la paleta.');
-      if (fileInputRef.current) fileInputRef.current.value = '';
+    reader.onload = async () => {
+      try {
+        setIsAnalyzing(true);
+        setFeedback('Procesando imagen para guardarla de forma ligera...');
+        const base64 = reader.result as string;
+        const compressed = await compressImageDataUrl(base64);
+        updateProject({
+          image: { name: file.name, data: compressed },
+          palette: undefined,
+          previews: {},
+          selections: [],
+          usage: undefined,
+        });
+        setFeedback('Imagen cargada. Pulsa “Analizar con IA” para obtener la paleta.');
+      } catch (err: any) {
+        alert(err?.message || 'Error procesando la imagen.');
+        setFeedback('');
+      } finally {
+        setIsAnalyzing(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -307,7 +394,9 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
     setIsAnalyzing(true);
     setFeedback('Analizando imagen con IA para detectar paleta de colores...');
     try {
-      const result = await extractDesignPaletteWithAI(geminiKey, selectedProject.image.data, selectedProject.image.name || 'diseño');
+      const source = selectedProject.image.data;
+      const dataUrl = source.startsWith('data:') ? source : await fetchImageAsDataUrl(source);
+      const result = await extractDesignPaletteWithAI(geminiKey, dataUrl, selectedProject.image.name || 'diseño');
       const palette: ProjectPaletteColor[] = (result.palette || [])
         .map((c) => ({
           hex: normalizeHex(c.hex) || c.hex,
@@ -326,20 +415,88 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
       const previewsEntries = await Promise.all(
         palette.map(async (c) => {
           const key = normalizeHex(c.hex) || c.hex;
-          const thumb = await createFocusedThumbnail(selectedProject.image!.data, key);
+          const thumb = await createFocusedThumbnail(dataUrl, key);
           return [key, thumb] as const;
         })
       );
       const previews = Object.fromEntries(previewsEntries.filter(([, v]) => v)) as Record<string, string>;
 
       updateProject({
+        image: selectedProject.image ? { ...selectedProject.image, data: source } : undefined,
         palette,
         previews,
+        usage: undefined,
       });
       setFeedback(result.notes ? result.notes : 'Paleta detectada. Revisa recomendaciones y marca las lanas que vas a usar.');
       setNotesDraft(selectedProject.notes || '');
     } catch (err: any) {
       alert(err?.message || 'Error al analizar la imagen con IA.');
+      setFeedback('');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const updateDimensions = (patch: Partial<ProjectDimensions>) => {
+    if (!selectedProject) return;
+    updateProject({
+      dimensions: {
+        width: Number.isFinite(dimensions.width) ? dimensions.width : 0,
+        height: Number.isFinite(dimensions.height) ? dimensions.height : 0,
+        unit: dimensions.unit,
+        technique: dimensions.technique,
+        ...patch,
+      },
+      usage: undefined,
+    });
+  };
+
+  const calculateUsage = async () => {
+    if (!selectedProject) return;
+    if (!geminiKey) {
+      alert('Configura tu API Key de Gemini en Configuración IA para usar esta función.');
+      return;
+    }
+    if (!selectedProject.image?.data || !selectedProject.palette?.length) {
+      alert('Necesitas una imagen y una paleta detectada antes de calcular consumo.');
+      return;
+    }
+    if (!dimensions.width || !dimensions.height) {
+      alert('Indica el tamaño (ancho y alto) del diseño.');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setFeedback('Calculando consumo aproximado de lana por color...');
+    try {
+      const source = selectedProject.image.data;
+      const dataUrl = source.startsWith('data:') ? source : await fetchImageAsDataUrl(source);
+      const result = await estimateYarnUsageWithAI(geminiKey, dataUrl, {
+        width: dimensions.width,
+        height: dimensions.height,
+        unit: dimensions.unit,
+        technique: dimensions.technique,
+        palette: selectedProject.palette,
+      });
+
+      const gramsByHex: Record<string, number> = {};
+      (result.perColor || []).forEach((item) => {
+        const key = normalizeHex(item.hex);
+        if (!key) return;
+        gramsByHex[key] = Math.max(0, Number(item.grams) || 0);
+      });
+
+      const now = new Date().toISOString();
+      updateProject({
+        usage: {
+          totalGrams: Math.max(0, Number(result.totalGrams) || 0),
+          gramsByHex,
+          createdAt: now,
+        },
+      });
+      setFeedback(result.notes ? result.notes : 'Consumo estimado calculado. Revisa los gramos por color y ajusta si hace falta.');
+    } catch (err: any) {
+      alert(err?.message || 'Error al calcular consumo con IA.');
       setFeedback('');
     } finally {
       setIsAnalyzing(false);
@@ -385,6 +542,9 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
       .map((s) => {
         const yarn = yarns.find((y) => y.id === s.yarnId);
         const color = yarn?.colors.find((c) => c.code === s.colorCode);
+        const grams = selectedProject.usage?.gramsByHex?.[normalizeHex(s.designHex) || s.designHex] || 0;
+        const skeins =
+          yarn && yarn.weightGrams ? Math.max(0, grams) / Math.max(1, Number(yarn.weightGrams) || 1) : 0;
         return {
           key: `${s.yarnId}-${s.colorCode}`,
           yarnName: yarn?.name || 'Lana',
@@ -394,10 +554,53 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
           hex: normalizeHex(color?.hex || '') || (color?.hex || ''),
           qty: s.quantity,
           inStock: (color ? getColorTotalStock(color) : 0) > 0,
+          grams: Number.isFinite(grams) ? grams : 0,
+          skeins: Number.isFinite(skeins) ? skeins : 0,
         };
       })
       .filter((x) => x.key);
   }, [selectedProject?.selections, yarns]);
+
+  const costsTotal = useMemo(() => {
+    return (costItems || []).reduce((sum, item) => {
+      const qty = Number(item.quantity) || 0;
+      const unitCost = Number(item.unitCost) || 0;
+      return sum + Math.max(0, qty) * Math.max(0, unitCost);
+    }, 0);
+  }, [costItems]);
+
+  const addCostItem = () => {
+    if (!selectedProject) return;
+    const name = newCostName.trim();
+    if (!name) return;
+    const category = newCostCategory.trim() || 'Material';
+    const quantity = Math.max(0, Number(newCostQty) || 0);
+    const unitCost = Math.max(0, Number(newCostUnitCost) || 0);
+    const next: ProjectCostItem = {
+      id: `cost-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      name,
+      category,
+      quantity,
+      unitCost,
+    };
+    updateProject({ costItems: [...costItems, next] });
+    setNewCostName('');
+    setNewCostCategory('Material');
+    setNewCostQty(1);
+    setNewCostUnitCost(0);
+  };
+
+  const updateCostItem = (id: string, patch: Partial<ProjectCostItem>) => {
+    if (!selectedProject) return;
+    updateProject({
+      costItems: costItems.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    });
+  };
+
+  const removeCostItem = (id: string) => {
+    if (!selectedProject) return;
+    updateProject({ costItems: costItems.filter((c) => c.id !== id) });
+  };
 
   return (
     <div className="space-y-6">
@@ -529,6 +732,13 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                   <div className="flex gap-2 shrink-0">
                     <button
                       type="button"
+                      onClick={handleSaveProjects}
+                      className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition"
+                    >
+                      <Save size={14} className="inline mr-1" /> Guardar
+                    </button>
+                    <button
+                      type="button"
                       onClick={deleteProject}
                       className="py-2 px-3 border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold rounded-xl transition"
                     >
@@ -581,6 +791,69 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                       </div>
                     )}
 
+                    <div className="bg-white border border-slate-100 rounded-2xl p-4 space-y-3">
+                      <div className="text-xs font-bold text-slate-700 uppercase tracking-widest">Tamaño del diseño</div>
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                        <div className="md:col-span-4">
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Ancho</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={dimensions.width || 0}
+                            onChange={(e) => updateDimensions({ width: Math.max(0, Number(e.target.value) || 0) })}
+                            className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                          />
+                        </div>
+                        <div className="md:col-span-4">
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Alto</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={dimensions.height || 0}
+                            onChange={(e) => updateDimensions({ height: Math.max(0, Number(e.target.value) || 0) })}
+                            className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                          />
+                        </div>
+                        <div className="md:col-span-4">
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Unidad</label>
+                          <select
+                            value={dimensions.unit}
+                            onChange={(e) => updateDimensions({ unit: e.target.value as ProjectSizeUnit })}
+                            className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                          >
+                            <option value="cm">cm</option>
+                            <option value="mm">mm</option>
+                            <option value="in">in</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr_210px] gap-2 items-end">
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Técnica</label>
+                          <input
+                            type="text"
+                            value={dimensions.technique || ''}
+                            onChange={(e) => updateDimensions({ technique: e.target.value })}
+                            className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                            placeholder='Ej. "Tejido", "Tufting", "Crochet"'
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={calculateUsage}
+                          disabled={isAnalyzing}
+                          className="py-2 px-3 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold rounded-xl transition disabled:opacity-60"
+                        >
+                          Calcular consumo (IA)
+                        </button>
+                      </div>
+                      {selectedProject.usage?.createdAt && (
+                        <div className="text-[11px] text-slate-500">
+                          Total estimado: <span className="font-bold">{Math.round(selectedProject.usage.totalGrams)}</span> g · cálculo: {new Date(selectedProject.usage.createdAt).toLocaleString('es-ES')}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="bg-white border border-slate-100 rounded-2xl p-4 space-y-2">
                       <div className="text-xs font-bold text-slate-700 uppercase tracking-widest">Notas</div>
                       <textarea
@@ -618,6 +891,9 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                     {recommendationsByPalette.map((row) => {
                       const selected = getSelectionFor(row.design.hex);
                       const preview = selectedProject.previews?.[row.design.hex] || '';
+                      const grams = selectedProject.usage?.gramsByHex?.[row.design.hex] || 0;
+                      const selectedYarn = selected ? yarns.find((y) => y.id === selected.yarnId) : null;
+                      const skeins = selectedYarn ? Math.max(0, grams) / Math.max(1, Number(selectedYarn.weightGrams) || 1) : 0;
 
                       return (
                         <div key={row.design.hex} className="bg-white border border-slate-100 rounded-2xl p-4">
@@ -643,8 +919,13 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                               ) : (
                                 <div className="h-12 w-12 rounded-xl border border-slate-200 bg-slate-50" />
                               )}
-                              <div className="text-[11px] text-slate-500 font-mono">
-                                peso {Number(row.design.weight || 0).toFixed(2)}
+                              <div className="text-right">
+                                <div className="text-[11px] text-slate-500 font-mono">peso {Number(row.design.weight || 0).toFixed(2)}</div>
+                                {selectedProject.usage && (
+                                  <div className="text-[11px] text-slate-600 font-mono">
+                                    {Math.round(grams)} g{selectedYarn ? ` · ~${Math.ceil(skeins)} ovillos` : ''}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -741,6 +1022,11 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                         </div>
                         <div className="text-right shrink-0">
                           <div className="text-xs font-bold text-slate-800 font-mono">x{item.qty}</div>
+                          {item.grams > 0 && (
+                            <div className="text-[10px] text-slate-600 font-mono">
+                              {Math.round(item.grams)} g · ~{Math.ceil(item.skeins)} ovillos
+                            </div>
+                          )}
                           {item.inStock ? (
                             <div className="text-[10px] font-bold text-emerald-700">Stock OK</div>
                           ) : (
@@ -749,6 +1035,143 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-800">Coste estimado</div>
+                    <div className="text-[11px] text-gray-500">Añade telas, lana, pegamento, herramientas, etc. y calcula un total.</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[11px] text-gray-500">Total</div>
+                    <div className="text-lg font-extrabold text-gray-800">
+                      {costsTotal.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' })}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-50/40 border border-slate-100 rounded-2xl p-4 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                    <div className="md:col-span-5">
+                      <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Concepto</label>
+                      <input
+                        type="text"
+                        value={newCostName}
+                        onChange={(e) => setNewCostName(e.target.value)}
+                        className="w-full bg-white border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                        placeholder='Ej. "Pegamento", "Tela base", "Ovillos extra"'
+                      />
+                    </div>
+                    <div className="md:col-span-3">
+                      <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Categoría</label>
+                      <input
+                        type="text"
+                        value={newCostCategory}
+                        onChange={(e) => setNewCostCategory(e.target.value)}
+                        className="w-full bg-white border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                        placeholder='Ej. "Material"'
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Cantidad</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={newCostQty}
+                        onChange={(e) => setNewCostQty(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full bg-white border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Coste unidad (€)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={newCostUnitCost}
+                        onChange={(e) => setNewCostUnitCost(Math.max(0, Number(e.target.value) || 0))}
+                        className="w-full bg-white border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addCostItem}
+                    className="py-2 px-3 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-xl transition"
+                  >
+                    Añadir coste
+                  </button>
+                </div>
+
+                {costItems.length === 0 ? (
+                  <div className="text-xs text-gray-500 bg-slate-50/40 border border-slate-100 rounded-2xl p-4">
+                    Aún no has añadido costes.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {costItems.map((item) => {
+                      const subtotal = Math.max(0, Number(item.quantity) || 0) * Math.max(0, Number(item.unitCost) || 0);
+                      return (
+                        <div key={item.id} className="bg-white border border-slate-100 rounded-2xl p-4">
+                          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+                            <div className="md:col-span-5">
+                              <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Concepto</label>
+                              <input
+                                type="text"
+                                value={item.name}
+                                onChange={(e) => updateCostItem(item.id, { name: e.target.value })}
+                                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                              />
+                            </div>
+                            <div className="md:col-span-3">
+                              <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Categoría</label>
+                              <input
+                                type="text"
+                                value={item.category}
+                                onChange={(e) => updateCostItem(item.id, { category: e.target.value })}
+                                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition"
+                              />
+                            </div>
+                            <div className="md:col-span-2">
+                              <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Cantidad</label>
+                              <input
+                                type="number"
+                                min="0"
+                                value={item.quantity}
+                                onChange={(e) => updateCostItem(item.id, { quantity: Math.max(0, Number(e.target.value) || 0) })}
+                                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                              />
+                            </div>
+                            <div className="md:col-span-2">
+                              <label className="block text-[10px] font-bold text-gray-400 mb-1 uppercase tracking-wider">Coste unidad (€)</label>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.unitCost}
+                                onChange={(e) => updateCostItem(item.id, { unitCost: Math.max(0, Number(e.target.value) || 0) })}
+                                className="w-full bg-slate-50 border border-slate-200 focus:border-orange-500 focus:outline-none rounded-xl py-2 px-3 text-sm text-gray-800 transition font-mono"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-3 flex items-center justify-between gap-3">
+                            <div className="text-[11px] text-slate-500">
+                              Subtotal: <span className="font-bold">{subtotal.toLocaleString('es-ES', { style: 'currency', currency: 'EUR' })}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCostItem(item.id)}
+                              className="py-2 px-3 border border-rose-200 text-rose-700 hover:bg-rose-50 text-xs font-bold rounded-xl transition"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -811,4 +1234,3 @@ export default function ProjectsManagement({ yarns, projects, geminiKey, onUpdat
     </div>
   );
 }
-

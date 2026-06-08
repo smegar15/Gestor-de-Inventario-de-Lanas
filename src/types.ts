@@ -38,13 +38,40 @@ export interface ProjectSelection {
   quantity: number;
 }
 
+export type ProjectSizeUnit = 'cm' | 'mm' | 'in';
+
+export interface ProjectDimensions {
+  width: number;
+  height: number;
+  unit: ProjectSizeUnit;
+  technique: string;
+}
+
+export interface ProjectCostItem {
+  id: string;
+  name: string;
+  category: string;
+  quantity: number;
+  unitCost: number;
+}
+
+export interface ProjectUsageEstimation {
+  totalGrams: number;
+  gramsByHex: Record<string, number>;
+  createdAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   image?: { name: string; data: string };
+  imagePath?: string;
   palette?: ProjectPaletteColor[];
   selections: ProjectSelection[];
   previews?: Record<string, string>;
+  dimensions?: ProjectDimensions;
+  costItems?: ProjectCostItem[];
+  usage?: ProjectUsageEstimation;
   notes?: string;
   createdAt: string;
   updatedAt: string;

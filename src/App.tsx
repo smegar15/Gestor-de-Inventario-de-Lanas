@@ -94,6 +94,31 @@ export default function App() {
         return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
       };
 
+      const mergeProjects = (remoteList: Project[], localList: Project[]): Project[] => {
+        const parseTime = (value: unknown): number => {
+          if (typeof value !== 'string') return 0;
+          const ms = Date.parse(value);
+          return Number.isFinite(ms) ? ms : 0;
+        };
+
+        const byId = new Map<string, Project>();
+        const put = (p: Project) => {
+          if (!p || typeof p.id !== 'string' || !p.id.trim()) return;
+          const current = byId.get(p.id);
+          if (!current) {
+            byId.set(p.id, p);
+            return;
+          }
+          const a = parseTime(current.updatedAt) || parseTime(current.createdAt);
+          const b = parseTime(p.updatedAt) || parseTime(p.createdAt);
+          byId.set(p.id, b >= a ? p : current);
+        };
+
+        remoteList.forEach(put);
+        localList.forEach(put);
+        return Array.from(byId.values()).sort((a, b) => (parseTime(b.updatedAt) || 0) - (parseTime(a.updatedAt) || 0));
+      };
+
       const envGemini = import.meta.env.VITE_GEMINI_API_KEY;
       const storedKey = localStorage.getItem('tejestock_gemini_key');
       const initialGeminiKey = cleanValue(envGemini || storedKey || '');
@@ -144,7 +169,7 @@ export default function App() {
             const nextBags = mergeBagsWithYarns(remoteBags || localBags, normalizedRemote);
             setBags(nextBags);
             localStorage.setItem('tejestock_bags_v1', JSON.stringify(nextBags));
-            const nextProjects = Array.isArray(remoteProjects) ? remoteProjects : localProjects;
+            const nextProjects = mergeProjects(remoteProjects || [], localProjects);
             setProjects(nextProjects);
             localStorage.setItem('tejestock_projects_v1', JSON.stringify(nextProjects));
             setSyncStatus('synced');
@@ -270,12 +295,88 @@ export default function App() {
   };
 
   const saveProjects = async (updatedProjects: Project[]) => {
-    setProjects(updatedProjects);
-    localStorage.setItem('tejestock_projects_v1', JSON.stringify(updatedProjects));
+    const dataUrlToBlob = (dataUrl: string): Blob | null => {
+      try {
+        const [meta, b64] = dataUrl.split(',');
+        if (!meta || !b64) return null;
+        const mime = meta.split(';')[0].split(':')[1] || 'application/octet-stream';
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+      } catch {
+        return null;
+      }
+    };
+
+    const sanitizeFileName = (name: string): string =>
+      name
+        .trim()
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '')
+        .slice(0, 80) || 'image.jpg';
+
+    const ensureImagesInSupabase = async (input: Project[]): Promise<Project[]> => {
+      if (!supabaseUrl || !supabaseKey) return input;
+      const client = getSupabase();
+      if (!client) return input;
+
+      const bucket = 'tejestock-projects';
+      const next: Project[] = [];
+
+      for (const project of input) {
+        const imgData = project.image?.data || '';
+        const hasDataUrl = typeof imgData === 'string' && imgData.startsWith('data:');
+        const needsUpload = hasDataUrl && !project.imagePath;
+
+        if (!needsUpload) {
+          next.push(project);
+          continue;
+        }
+
+        const blob = dataUrlToBlob(imgData);
+        if (!blob) {
+          next.push(project);
+          continue;
+        }
+
+        const fileName = sanitizeFileName(project.image?.name || 'image.jpg');
+        const ext = fileName.includes('.') ? fileName.split('.').pop() || 'jpg' : 'jpg';
+        const path = `${project.id}/${Date.now()}.${ext}`;
+
+        const { error } = await client.storage.from(bucket).upload(path, blob, { upsert: true, contentType: blob.type });
+        if (error) {
+          console.error('Error uploading project image to Supabase Storage:', error);
+          next.push(project);
+          continue;
+        }
+
+        const publicUrl = client.storage.from(bucket).getPublicUrl(path)?.data?.publicUrl || '';
+        next.push({
+          ...project,
+          imagePath: path,
+          image: project.image ? { ...project.image, data: publicUrl || '' } : undefined,
+        });
+      }
+
+      return next;
+    };
+
+    const preparedProjects = await ensureImagesInSupabase(updatedProjects);
+    setProjects(preparedProjects);
+    try {
+      localStorage.setItem('tejestock_projects_v1', JSON.stringify(preparedProjects));
+    } catch (e: any) {
+      console.error('Error saving projects to localStorage:', e);
+      alert(
+        'No se pudieron guardar los proyectos en este navegador (posible falta de espacio).\n\n' +
+        'Si tienes Supabase configurado, asegúrate de tener un bucket público llamado "tejestock-projects".'
+      );
+    }
 
     if (supabaseUrl && supabaseKey) {
       setSyncStatus('syncing');
-      const success = await syncYarnsToSupabase(yarns, bags, updatedProjects);
+      const success = await syncYarnsToSupabase(yarns, bags, preparedProjects);
       setSyncStatus(success ? 'synced' : 'offline');
     }
   };

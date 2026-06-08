@@ -156,3 +156,94 @@ Reglas:
     throw error;
   }
 }
+
+export async function estimateYarnUsageWithAI(
+  apiKey: string,
+  fileData: string,
+  input: { width: number; height: number; unit: string; technique: string; palette: { hex: string; name: string; weight: number }[] }
+): Promise<{ totalGrams: number; perColor: { hex: string; grams: number }[]; notes?: string }> {
+  const cleanKey = apiKey.trim();
+  const genAI = new GoogleGenerativeAI(cleanKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-3.5-flash" });
+
+  const mimeType = fileData.split(';')[0].split(':')[1];
+  const base64Content = fileData.split(',')[1];
+
+  const paletteText = (input.palette || [])
+    .map((c) => `${c.hex} (${c.name || 'Color'}, weight ${Number(c.weight || 0).toFixed(2)})`)
+    .join(', ');
+
+  const prompt = `
+Quiero estimar consumo de lana por color para reproducir este diseño.
+
+Datos del proyecto:
+- Tamaño: ${input.width} x ${input.height} ${input.unit}
+- Técnica: ${input.technique}
+- Paleta objetivo (hex): ${paletteText}
+
+Tarea:
+1) Estima el consumo total de lana en gramos (totalGrams) para completar el diseño a ese tamaño.
+2) Reparte ese consumo entre los colores de la paleta y devuelve gramos por color (perColor).
+
+Responde ÚNICAMENTE con un JSON válido:
+{
+  "totalGrams": número,
+  "perColor": [
+    { "hex": "#RRGGBB", "grams": número }
+  ],
+  "notes": "opcional"
+}
+
+Reglas:
+- Usa solo hex del listado de paleta (si dudas, usa el más cercano).
+- Devuelve todos los colores de la paleta en perColor.
+- Los gramos deben ser >= 0.
+- No incluyas texto fuera del JSON.
+`;
+
+  try {
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          data: base64Content,
+          mimeType: mimeType
+        }
+      }
+    ]);
+
+    const response = await result.response;
+    const text = response.text();
+    const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
+    const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("La IA no devolvió un formato de datos válido. Prueba a subir la imagen de nuevo.");
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    const totalGrams = Math.max(0, Number(parsed?.totalGrams) || 0);
+    const raw = Array.isArray(parsed?.perColor) ? parsed.perColor : [];
+    const perColor = raw
+      .map((item: any) => ({
+        hex: typeof item?.hex === 'string' ? item.hex.trim().toUpperCase() : '',
+        grams: Math.max(0, Number(item?.grams) || 0)
+      }))
+      .filter((c: any) => c.hex);
+
+    return {
+      totalGrams,
+      perColor,
+      notes: typeof parsed?.notes === 'string' ? parsed.notes : undefined
+    };
+  } catch (error: any) {
+    console.error("Error calling Gemini:", error);
+    if (error.message?.includes('API_KEY_INVALID')) {
+      throw new Error("La API Key de Gemini no es válida. Por favor, revísala en Configuración.");
+    }
+    if (error.message?.includes('SAFETY')) {
+      throw new Error("La IA bloqueó el contenido por seguridad. Intenta con otra imagen.");
+    }
+    throw error;
+  }
+}
